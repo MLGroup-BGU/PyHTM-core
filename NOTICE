@@ -1,0 +1,43 @@
+PyHTM-core
+==========
+
+This repository is a modified fork of htm.core, the HTM Community Edition
+of NuPIC:
+
+    Upstream:  https://github.com/htm-community/htm.core
+    Original copyright (C) 2013-2024, Numenta, Inc. and the htm.core
+    community contributors.
+
+htm.core is licensed under the GNU Affero General Public License version 3
+(AGPLv3). PyHTM-core is a derivative work and is therefore distributed under
+the SAME license (AGPLv3). See the LICENSE file for the full terms.
+
+----------------------------------------------------------------------
+Modifications in this fork
+----------------------------------------------------------------------
+PyHTM-core adapts htm.core to serve as the C++ engine for the PyHTM
+("htm-streamer") pyramid architecture. The substantive changes relative to
+upstream htm.core are:
+
+  * GIL release added around the heavy C++ compute calls in the Python
+    bindings (SpatialPooler and TemporalMemory), enabling real
+    multithreaded use from Python.
+
+  * Connections data-structure changes: pre-reservation of synapse/segment
+    buffers to avoid repeated reallocation, and a CSR-style switch from
+    hash maps to index-addressable vectors on the hot path.
+
+  * Build adjustment so the Linux build compiles in Release mode
+    (assertions off), matching the Windows build behaviour.
+
+  * Removal of content not required to build or run the engine for our use
+    case: all examples, docs, tests/unit-tests, CI, GitHub workflows,
+    git hooks, and Docker files that shipped with upstream htm.core were
+    NOT carried over.
+
+All source files and directories that WERE carried over retain their
+original structure and copyright headers, so changes relative to upstream
+remain easy to track.
+
+This NOTICE file is provided for attribution and does not modify the terms
+of the AGPLv3 license under which this software is distributed.

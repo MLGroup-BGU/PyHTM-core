@@ -1,0 +1,52 @@
+# ======================================================================
+# PyHTM-core .gitignore
+# ----------------------------------------------------------------------
+# We deliberately keep the htm.core source tree (src/, bindings/, py/,
+# external/, and the build-system files). Only generated / local
+# artifacts are ignored below. Everything we kept from htm.core stays
+# tracked so updates remain easy to follow.
+# ======================================================================
+
+# --- Build & packaging artifacts (produced by build_htm_core.py) ------
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- Temporary build venv (created/destroyed by build_htm_core.py) ----
+.venv/
+venv/
+
+# --- Python bytecode / caches -----------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Compiled extension / object artifacts ----------------------------
+*.so
+*.pyd
+*.dll
+*.dylib
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.ilk
+*.pdb
+
+# --- CMake local output (if ever generated outside build/) ------------
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# --- Local helper files (yours, not part of the source) ---------------
+structure.txt
+*.log
+
+# --- Editor / OS noise ------------------------------------------------
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
