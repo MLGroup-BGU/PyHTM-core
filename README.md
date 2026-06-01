@@ -1,6 +1,6 @@
 # 🧠 PyHTM-core
 
-> The C++ HTM engine behind **[PyHTM](https://github.com/…/htm-streamer)** (`htm-streamer`).
+> The C++ HTM engine behind **[PyHTM](https://github.com/MLGroup-BGU/htm-streamer.git)** (`htm-streamer`).
 > A trimmed, lightly-modified fork of **[htm.core](https://github.com/htm-community/htm.core)**, adapted to power the PyHTM pyramid architecture.
 
 ---
