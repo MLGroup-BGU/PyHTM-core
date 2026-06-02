@@ -1,6 +1,6 @@
 # 🧠 PyHTM-core
 
-> The C++ HTM engine behind **[PyHTM](https://github.com/…/htm-streamer)** (`htm-streamer`).
+> The C++ HTM engine behind **[PyHTM](https://github.com/MLGroup-BGU/htm-streamer.git)** (`htm-streamer`).
 > A trimmed, lightly-modified fork of **[htm.core](https://github.com/htm-community/htm.core)**, adapted to power the PyHTM pyramid architecture.
 
 ---
@@ -148,7 +148,7 @@ For reference, the engine is built through the standard htm.core flow
 
 PyHTM-core is licensed under the **GNU Affero General Public License v3
 (AGPLv3)** — the same license as upstream htm.core, as required for a
-derivative work. See the [`LICENSE`](LICENSE) file for the full text and
+derivative work. See the [`LICENSE`](LICENSE.txt) file for the full text and
 [`NOTICE`](NOTICE) for attribution and the summary of modifications.
 
 In short: you are free to use, study, modify, and redistribute this software,
