@@ -200,7 +200,11 @@ def check_cmake_version(min_version):
         )
         version_output = result.stdout
         version_str = version_output.splitlines()[0].split()[-1]
-        
+        # strip any non-numeric suffix (e.g. "4.2.3-msvc3" -> "4.2.3")
+        import re as _re
+        _m = _re.match(r'(\d+(?:\.\d+)*)', version_str)
+        if _m:
+            version_str = _m.group(1)
         # Parse the version string using packaging.version.Version
         installed_version = version.parse(version_str)
         required_version = version.parse(min_version)
