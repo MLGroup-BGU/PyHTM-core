@@ -2,6 +2,10 @@
 # HTM Community Edition of NuPIC
 # Copyright (C) 2013-2015, Numenta, Inc.
 #   Migrated to scikit-build-core:  David Keeney, dkeeney@gmail.com, Dec 2024
+#   Trimmed for PyHTM-core: only the three binding modules PyHTM actually
+#   imports are built -- algorithms.so, sdr.so, encoders.so. The
+#   engine_internal.so / math.so modules and the PyBindRegion plugin wrapped
+#   the removed Network-engine and are gone with it.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero Public License version 3 as
@@ -18,11 +22,8 @@
 #
 # This builds the Python language interface.  This consists of the following libs
 #   algorithms.so
-#   engine_internal.so
-#   math.so
 #   encoders.so
 #   sdr.so
-#
 #
 # For PyBind11 info See: https://pybind11.readthedocs.io/en/stable/compiling.html
 #######################################################################
@@ -50,7 +51,6 @@ set(src_py_algorithms_files
     bindings/algorithms/algorithm_module.cpp
     bindings/algorithms/py_Connections.cpp
     bindings/algorithms/py_TemporalMemory.cpp
-    bindings/algorithms/py_SDRClassifier.cpp
     bindings/algorithms/py_SpatialPooler.cpp
     )
 
@@ -64,40 +64,13 @@ set(src_py_encoders_files
     bindings/encoders/encoders_module.cpp
     bindings/encoders/py_ScalarEncoder.cpp
     bindings/encoders/py_RDSE.cpp
-    bindings/encoders/py_SimHashDocumentEncoder.cpp
     bindings/encoders/py_DateEncoder.cpp
     )
 
-set(src_py_engine_files
-    plugin/PyBindRegion.cpp
-    plugin/PyBindRegion.hpp
-    plugin/RegisteredRegionImplPy.hpp
-    bindings/engine/engine_module.cpp
-    bindings/engine/py_Engine.cpp
-    bindings/engine/py_Region.cpp
-    bindings/engine/py_Timer.cpp
-    bindings/engine/py_utils.hpp
-	)
-	
-set(src_py_math_files
-    bindings/math/math_module.cpp    
-    bindings/math/py_Random.cpp
-    bindings/math/py_reals.cpp
-    bindings/math/py_Topology.cpp
-    )
-    
-set(src_py_test_files
-	plugin/unittest/main.cpp
-	plugin/unittest/PyRegionTest.cpp
-	)
-	
 #set up file tabs in Visual Studio
 source_group("algorithms" FILES ${src_py_algorithms_files})
 source_group("sdr"        FILES ${src_py_sdr_files})
 source_group("encoders"   FILES ${src_py_encoders_files})
-source_group("engine"     FILES ${src_py_engine_files})
-source_group("math"       FILES ${src_py_math_files})
-source_group("test"       FILES ${src_py_test_files})
 ############################################################
 #
 # Build the shared binding libraries for the Python Interface
@@ -108,9 +81,6 @@ source_group("test"       FILES ${src_py_test_files})
 #       See: https://bugs.python.org/issue22411
 #       and: https://github.com/pybind/pybind11/issues/1295
 #          
-
-
-
 
 # It is ready to use pybind11_add_module() macro.
 # For details: https://pybind11.readthedocs.io/en/stable/compiling.html#cmake
@@ -163,39 +133,6 @@ target_include_directories(${encoders_shared_lib} PRIVATE
         SYSTEM ${EXTERNAL_INCLUDES}
 	)
 
-
-set(engine_shared_lib engine_internal)
-pybind11_add_module(${engine_shared_lib} ${src_py_engine_files})
-target_link_libraries(${engine_shared_lib} PRIVATE
-		${htm_core_lib_path}
-		${COMMON_OS_LIBS}
-		)
-target_compile_options(${engine_shared_lib} PUBLIC ${INTERNAL_CXX_FLAGS})
-target_compile_definitions(${engine_shared_lib} PRIVATE ${COMMON_COMPILER_DEFINITIONS})
-target_include_directories(${engine_shared_lib} PRIVATE 
-        ${CORE_LIB_INCLUDES}
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        SYSTEM ${PYTHON_INCLUDE_DIRS}
-        SYSTEM ${pybind11_INCLUDE_DIRS}
-        SYSTEM ${EXTERNAL_INCLUDES}	
-	)
-
-
-set(math_shared_lib math)
-pybind11_add_module(${math_shared_lib} ${src_py_math_files})
-target_link_libraries(${math_shared_lib} PRIVATE 
-		${htm_core_lib_path}
-		${COMMON_OS_LIBS}
-		)
-target_compile_options(${math_shared_lib} PUBLIC ${INTERNAL_CXX_FLAGS})
-target_compile_definitions(${math_shared_lib} PRIVATE ${COMMON_COMPILER_DEFINITIONS})
-target_include_directories(${math_shared_lib} PRIVATE 
-        ${CORE_LIB_INCLUDES}
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        SYSTEM ${PYTHON_INCLUDE_DIRS}
-        SYSTEM ${pybind11_INCLUDE_DIRS}
-        SYSTEM ${EXTERNAL_INCLUDES}	
-	)
 # Install the extension modules using scikit-build-core's install command
-install(TARGETS ${sdr_shared_lib} ${encoders_shared_lib} ${algorithms_shared_lib} ${engine_shared_lib} ${math_shared_lib}
+install(TARGETS ${sdr_shared_lib} ${encoders_shared_lib} ${algorithms_shared_lib}
         DESTINATION htm/bindings COMPONENT python)

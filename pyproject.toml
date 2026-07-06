@@ -63,10 +63,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "hexy>=1.4.4",
-    "numpy>=2.0", 
-    "prettytable>=3.5.0", 
-    "wcwidth>=0.2.13"
+    "numpy>=2.0"
 ]
 
 [project.urls]
@@ -94,8 +91,7 @@ sdist.include = ["build/Thirdparty", "build/Release"]   # for external dependenc
 #  { source = "build/Thirdparty/mnist", destination = "htm/data" } 
 #]
 
-[tool.setuptools.package-data]
-htm = ["data/mnist/*"]
+
 
 		   
 

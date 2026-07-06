@@ -15,12 +15,9 @@ against the original.
 
 | Subfolder | Responsibility |
 |-----------|----------------|
-| `algorithms/` | The core learning algorithms — **Spatial Pooler**, **Temporal Memory**, **Connections** (synapse/segment storage), Anomaly, SDR Classifier. This is where PyHTM-core's performance changes live (Connections buffer pre-reservation + CSR-style structures). |
-| `encoders/` | Turn raw inputs into SDRs — scalar, date, RDSE, SimHash document encoders. |
-| `engine/` | **NetworkAPI** — Regions, Links, Network, the REST interface, and the region registration machinery that ties components into a runnable graph. |
+| `algorithms/` | The core learning algorithms — **Spatial Pooler**, **Temporal Memory**, **Connections** (synapse/segment storage), Anomaly / AnomalyLikelihood. This is where PyHTM-core's performance changes live (Connections buffer pre-reservation + CSR-style structures, hot-path allocation removal). |
+| `encoders/` | Turn raw inputs into SDRs — scalar, date, RDSE encoders. |
 | `types/` | Fundamental types — **SDR**, the serialization interfaces, and base exception/type definitions. |
-| `ntypes/` | Lower-level container/value types used across the engine (Array, Value, Collection, Dimensions). |
-| `regions/` | NetworkAPI region wrappers around the algorithms and encoders (SPRegion, TMRegion, encoder regions, file I/O regions, database region). |
 | `os/` | OS-abstraction helpers — paths, directories, environment, timers. |
 | `utils/` | Shared utilities — logging, random, moving average, SDR metrics, topology, sliding window. |
 

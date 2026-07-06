@@ -76,6 +76,44 @@ that anyone familiar with htm.core can quickly see the nature of the changes.
   (assertions off), matching the Windows build. Previously the Linux build
   left internal debug assertions active, which dominated runtime.
 
+- **Hot-path allocation removal (2026 optimization pass).** Verified
+  bit-exact against the previous build (identical outputs, fixed seeds,
+  including pickle round-trips):
+  - `TemporalMemory::getPredictiveCells()` no longer builds a `std::set`
+    (one heap allocation per inserted node, every step) — the active-segment
+    list is already sorted by cell, so a linear adjacent-duplicate skip
+    produces the same result with zero tree allocations.
+  - `SpatialPooler::initialize()` reuses hoisted buffers instead of
+    allocating two dense input-sized vectors per column (~72 KB of
+    malloc/free churn per column removed — the allocator contention this
+    causes across a multi-threaded pyramid build is exactly what mimalloc
+    was brought in to fight; now there is far less of it to fight).
+  - `SpatialPooler::updateDutyCycles_()` no longer constructs a temporary
+    SDR every learning step.
+  - Global inhibition keeps its index scratch between steps and drops a
+    pointless `shrink_to_fit` (an extra allocation + copy per step).
+  - Boost-factor updates early-out entirely when `boostStrength == 0`
+    (PyHTM's default), skipping a no-op full-column loop every step.
+  - `SpatialPooler::compute()` returns a movable overlaps vector; together
+    with the binding change this removes two full vector copies per step.
+
+- **Wider GIL release in the bindings (2026 optimization pass).**
+  `getPredictiveCells`, `cellsToColumns`, `getWinnerCells`, and
+  `RDSE.encode` now also run their C++ work with the GIL released (only
+  `compute`/`activateDendrites`/`activateCells`/`getActiveCells` did
+  before). Measured: ~15% less GIL-held time per forward() step — time that
+  previously serialized every other worker thread in the hive.
+
+- **New C++ primitives for PyHTM's per-step Python work.**
+  - `SDR.subtract(minuend, subtrahend)` — sorted-sparse set difference,
+    GIL-released. Replaces the Python-set / `np.setdiff1d` logic in PyHTM's
+    residual (RTM) path: measured ×117 faster than the set approach,
+    ×58 vs `setdiff1d`, identical results.
+  - `htm.bindings.algorithms.computeRawAnomalyScore(active, predicted)` —
+    the core's own anomaly formula exposed directly (GIL-released), so
+    PyHTM's `calc_anomaly_score` can become a single C++ call instead of
+    an SDR allocation + intersection + two length reads under the GIL.
+
 > None of these change HTM logic or model outputs — they affect how the
 > engine threads, allocates memory, and is compiled.
 
@@ -97,6 +135,42 @@ is needed to compile or run the engine for PyHTM's use case:
 - Assorted upstream top-level docs (changelogs, contributing, developer
   notes) and the C++ formatting config.
 
+**2026 dead-code elimination pass.** PyHTM drives the engine directly
+through three binding modules (`algorithms`, `sdr`, `encoders`); everything
+that only served upstream's Network/Region API never executed in a PyHTM
+run and was removed, together with the third-party dependencies that only
+it pulled in:
+
+- **`src/htm/engine/`** — the whole NetworkAPI (Network, Region, Link,
+  Spec, RESTapi, Watcher, …).
+- **`src/htm/regions/`** — all region wrappers (SPRegion, TMRegion,
+  encoder regions, DatabaseRegion, file I/O regions, TestNode).
+- **`src/htm/ntypes/`** — Array/Value/Dimensions plumbing used only by the
+  engine (and with it the **libyaml** dependency).
+- **`SDRClassifier`** and **`SimHashDocumentEncoder`** (+ its **digestpp**
+  dependency) — not used by PyHTM.
+- **Binding modules `engine_internal` and `math`**, plus the PyBindRegion
+  plugin. The shared pybind helpers moved to `bindings/py_utils.hpp`; the
+  `NTA_LOG_LEVEL` definition (oddly housed in `engine/Network.cpp`
+  upstream) moved to its natural home, `src/htm/utils/Log.cpp`.
+- **`py/htm/advanced/`**, **`py/htm/optimization/`**, bindings
+  `tools/`+`regions/`, and the unused encoders (coordinate, grid-cell,
+  SimHash, the legacy `date_encoder.py`) and legacy Python
+  anomaly modules.
+- **External fetch scripts** for **eigen, mnist, gtest, sqlite3,
+  cpp-httplib, digestpp, libyaml** — none of the remaining code references
+  them (eigen/mnist appeared only in comments). Only **cereal**
+  (serialization) and the bundled **MurmurHash3** remain; notably, the
+  eigen fetch was the build's only gitlab.com dependency — every remaining
+  download is GitHub/PyPI.
+- Python package dependencies shrank from `numpy, hexy, prettytable,
+  wcwidth` to **`numpy` only** (the others served removed code).
+
+Net effect: **225 → ~60 source files**, three binding modules instead of
+five, a ~1.25 MB wheel, and materially faster clean builds — with the
+`htm_install.py` flow and the import surface PyHTM uses left completely
+untouched.
+
 Everything **kept** retains its original htm.core path and structure, so
 tracking upstream changes stays straightforward.
 
@@ -107,18 +181,19 @@ tracking upstream changes stays straightforward.
 ```
 PyHTM-core/
 ├── 📂 src/                  # C++ engine — the core of everything
-│   ├── htm/                # algorithms, encoders, engine, ntypes, os,
-│   │                       #   regions, types, utils
+│   ├── htm/                # algorithms (SP, TM, Connections, anomaly),
+│   │                       #   encoders (RDSE, Scalar, Date), types (SDR),
+│   │                       #   utils (Random, Topology, …), minimal os
 │   └── README.md           # → what lives in the C++ source tree
 ├── 📂 bindings/             # pybind11 layer exposing C++ to Python
 │   └── py/
-│       ├── cpp_src/         # the binding sources (incl. GIL-release edits)
+│       ├── cpp_src/         # algorithms / sdr / encoders modules
+│       │                    #   (incl. the GIL-release edits)
 │       └── README.md        # → how the Python bindings are organized
 ├── 📂 py/                   # the importable `htm` Python package
-├── 📂 external/             # dependency fetch scripts (.cmake) + bundled deps
+├── 📂 external/             # cereal fetch script + bundled MurmurHash3
 ├── CMakeLists.txt           # top-level build entry
 ├── CommonCompilerConfig.cmake
-├── CPackConfig.cmake
 ├── htm_install.py           # orchestrates the C++ build + wheel
 ├── pyproject.toml           # build/package definition (scikit-build-core)
 ├── get_version.py / VERSION
@@ -126,8 +201,12 @@ PyHTM-core/
 └── NOTICE                   # fork attribution + summary of changes
 ```
 
-Key directories have their own READMEs: **[`src/`](src/README.md)** and
-**[`bindings/py/`](bindings/py/README.md)**.
+Every directory carries its own README — start from
+**[`src/htm/`](src/htm/README.md)** (engine map),
+**[`bindings/py/cpp_src/`](bindings/py/cpp_src/README.md)** (modules + GIL strategy),
+**[`py/htm/`](py/htm/README.md)** (import surface),
+**[`external/`](external/README.md)** (dependencies) and
+**[`verification/`](verification/README.md)** (the bit-exactness harness).
 
 ---
 

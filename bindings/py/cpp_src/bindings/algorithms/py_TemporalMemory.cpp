@@ -29,7 +29,7 @@
 
 #include <htm/algorithms/TemporalMemory.hpp>
 
-#include "bindings/engine/py_utils.hpp"
+#include "bindings/py_utils.hpp"  // shared pybind helpers (moved out of the removed engine bindings)
 
 namespace py = pybind11;
 using namespace htm;
@@ -337,7 +337,20 @@ See TM.compute() for details of the parameters.)",
             py::arg("externalPredictiveInputsWinners"));
 
         py_HTM.def("getPredictiveCells", [](const HTM_t& self)
-            { return self.getPredictiveCells();},
+            {
+                // PyHTM calls this every step of every module. The segment
+                // scan inside getPredictiveCells() and the copy into a heap
+                // SDR are pure C++ -> run them with the GIL released so
+                // sibling models on other threads keep computing. Only
+                // wrapping the pointer into a Python object (after this
+                // scope) needs the GIL; pybind takes ownership of it.
+                SDR *predictive = nullptr;
+                {
+                    py::gil_scoped_release release;
+                    predictive = new SDR( self.getPredictiveCells() );
+                }
+                return predictive;
+            },
 R"()");
 
         py_HTM.def("getWinnerCells", [](const HTM_t& self)
@@ -345,7 +358,13 @@ R"()");
             auto dims = self.getColumnDimensions();
             dims.push_back( static_cast<UInt32>(self.getCellsPerColumn()) );
             SDR *winnerCells = new SDR( dims );
-            self.getWinnerCells(*winnerCells);
+            {
+                // Same pattern as getActiveCells: the fill is pure C++, so
+                // drop the GIL around it; re-acquire (scope end) before
+                // handing the pointer to pybind.
+                py::gil_scoped_release release;
+                self.getWinnerCells(*winnerCells);
+            }
             return winnerCells;
         },
 R"()");
@@ -386,7 +405,18 @@ Argument cell
 Returns the created segment (index handle).)");
 
         py_HTM.def("cellsToColumns", [](const HTM_t& self, const SDR &cellsSDR )
-	{ return self.cellsToColumns(cellsSDR); },
+	{
+	    // Called every step by PyHTM right after getPredictiveCells. The
+	    // dense scatter + sparse rebuild inside cellsToColumns() is pure
+	    // C++ -> release the GIL around it (and around the copy into the
+	    // heap SDR); only the Python wrapping afterwards needs the GIL.
+	    SDR *cols = nullptr;
+	    {
+	        py::gil_scoped_release release;
+	        cols = new SDR( self.cellsToColumns(cellsSDR) );
+	    }
+	    return cols;
+	},
 R"(Converts cells SDR to corresponding columns SDR.
 
 Argument cells

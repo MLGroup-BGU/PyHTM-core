@@ -20,6 +20,22 @@ cmake_minimum_required(VERSION 3.21)
 
 project(htm LANGUAGES C CXX)
 
+# Optional link-time optimization (opt-in, default OFF -- zero effect unless
+# explicitly requested; lets Release builds inline across translation units,
+# e.g. the Connections <-> SP/TM hot loops). Enable with -DHTM_LTO=ON on
+# either build stage; applies to Release configurations only.
+option(HTM_LTO "Enable interprocedural (link-time) optimization" OFF)
+if(HTM_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT _htm_ipo_ok OUTPUT _htm_ipo_msg)
+  if(_htm_ipo_ok)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    message(STATUS "HTM_LTO: interprocedural optimization ENABLED for Release")
+  else()
+    message(WARNING "HTM_LTO requested but not supported here: ${_htm_ipo_msg}")
+  endif()
+endif()
+
 
 set(CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}")
 

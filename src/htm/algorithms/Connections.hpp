@@ -372,10 +372,23 @@ public:
    *   then we either keep the old one, or update the old one to have higher permanence (from the new call).
    *
    * @return Created synapse - index to the newly created synapse. Use `dataForSynapse(returnedValue)` to work with it.
+   *
+   * @param skipDuplicateCheck  When true, the caller GUARANTEES this
+   *        (segment, presynapticCell) pair is not already present, letting
+   *        this method skip the linear scan over the segment's existing
+   *        synapses. That scan makes bulk construction O(n^2) in the
+   *        segment's synapse count: SpatialPooler::initialize builds one
+   *        segment per column and adds its whole potential pool in a single
+   *        pass over distinct, increasing presynaptic indices, so no
+   *        duplicate is possible there. Passing true in that (and only that)
+   *        situation is behaviour-identical to the checked path but removes
+   *        the quadratic cost. Default false preserves the original,
+   *        always-safe behaviour for every other caller.
    */
   Synapse createSynapse(const Segment segment,
                         const CellIdx presynapticCell,
-                        Permanence permanence);
+                        Permanence permanence,
+                        const bool skipDuplicateCheck = false);
 
 
 
@@ -587,6 +600,29 @@ public:
 
   std::vector<SynapseIdx> computeActivity(const std::vector<CellIdx> &activePresynapticCells, 
 		                          const bool learn = true);
+
+  /**
+   * Fully in-place variant of computeActivity for steady-state stepping.
+   *
+   * Both output vectors are caller-owned reusable buffers, resized (with
+   * retained capacity) and overwritten here. The by-value overloads above
+   * materialised a fresh segment-count-sized vector on EVERY step -- and
+   * that count GROWS as the TM learns (easily into the 100Ks) -- plus one
+   * more full copy on the two-output path's return. With this variant the
+   * TM's per-step activity pass performs zero heap allocations once the
+   * buffers have reached their high-water capacity.
+   *
+   * Counting loops, their order, and the learn/timeseries side effects are
+   * byte-for-byte the same as the by-value overloads (all three now share
+   * one private core), so results are bit-exact.
+   *
+   * @param numActiveConnectedSynapsesForSegment  out: connected counts.
+   * @param numActivePotentialSynapsesForSegment  out: potential counts.
+   */
+  void computeActivity(std::vector<SynapseIdx> &numActiveConnectedSynapsesForSegment,
+                       std::vector<SynapseIdx> &numActivePotentialSynapsesForSegment,
+                       const std::vector<CellIdx> &activePresynapticCells,
+                       const bool learn);
 
   /**
    * The primary method in charge of learning.   Adapts the permanence values of
@@ -872,6 +908,28 @@ private:
   std::vector<Synapse>     destroyedSynapses_;
   Permanence               connectedThreshold_; //TODO make const
   UInt32 iteration_ = 0;
+
+  /**
+   * Shared core of all computeActivity overloads: zeroes `out` to segment
+   * count, applies the learn/timeseries side effects, and accumulates the
+   * connected-synapse counts. Extracted so the by-value and in-place public
+   * overloads are provably identical.
+   */
+  void computeActivityConnected_(std::vector<SynapseIdx> &out,
+                                 const std::vector<CellIdx> &activePresynapticCells,
+                                 const bool learn);
+
+  /**
+   * Reusable buffer for growSynapses' shuffled candidate list. growSynapses
+   * runs for every learning segment on every step and previously copied its
+   * candidate cells into a fresh vector each call (the copy is required --
+   * the list gets shuffled). The scratch is fully overwritten (assign) per
+   * call, carries no state between calls, and is NOT serialized. Safe
+   * because a Connections instance is only ever driven by one thread at a
+   * time (PyHTM's hive owns each model with exactly one worker) and
+   * growSynapses is not re-entrant.
+   */
+  std::vector<CellIdx> growCandidatesScratch_;
 
   // Extra bookkeeping for faster computing of segment activity.
   //

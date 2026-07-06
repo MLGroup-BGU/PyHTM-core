@@ -16,12 +16,9 @@ encoders, SDR, and NetworkAPI directly.
 | Path | What it is |
 |------|------------|
 | `cpp_src/` | The pybind11 binding sources — one module per area, each wrapping the matching C++ component. |
-| `cpp_src/bindings/algorithms/` | Bindings for Spatial Pooler, Temporal Memory, Connections, SDR Classifier. **The GIL-release edits are here** (Spatial Pooler & Temporal Memory). |
-| `cpp_src/bindings/encoders/` | Bindings for the encoders (scalar, date, RDSE, SimHash). |
-| `cpp_src/bindings/engine/` | Bindings for NetworkAPI (Network, Region, Timer). |
+| `cpp_src/bindings/algorithms/` | Bindings for Spatial Pooler, Temporal Memory, Connections, plus the module-level `computeRawAnomalyScore`. **The GIL-release edits are here.** |
+| `cpp_src/bindings/encoders/` | Bindings for the encoders (scalar, date, RDSE) — `RDSE.encode` is GIL-released. |
 | `cpp_src/bindings/sdr/` | Bindings for SDR and SDR metrics. |
-| `cpp_src/bindings/math/` | Bindings for random, topology, and numeric helpers. |
-| `cpp_src/plugin/` | NetworkAPI plugin glue (`PyBindRegion`) that lets regions be implemented/registered from Python. |
 
 ---
 

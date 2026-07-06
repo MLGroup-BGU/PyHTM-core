@@ -33,7 +33,7 @@ PyBind11 bindings for SpatialPooler class
 #include <htm/algorithms/SpatialPooler.hpp>
 #include <htm/types/Sdr.hpp>
 
-#include "bindings/engine/py_utils.hpp"
+#include "bindings/py_utils.hpp"  // shared pybind helpers (moved out of the removed engine bindings)
 
 
 namespace htm_ext
@@ -283,17 +283,18 @@ R"(See also standard library function: pickle.dumps(...))");
         // compute
         py_SpatialPooler.def("compute", [](SpatialPooler& self, const SDR& input, const bool learn, SDR& output)
             {
-	      // overlaps is a C++ reference into the SP; computing it is the
-	      // heavy pure-C++ work → release the GIL around it. We copy the
-	      // data into a Python array AFTER re-acquiring the GIL (scope end),
-	      // since building py::array needs the GIL.
-	      std::vector<SynapseIdx> overlaps_copy;
+	      // The heavy pure-C++ work runs with the GIL released. compute()
+	      // now returns the overlaps vector by (movable) value, so we take
+	      // ownership with a move -- no element copy here (the old code
+	      // copied the whole vector under the released GIL). We build the
+	      // Python array AFTER re-acquiring the GIL (scope end), since
+	      // constructing py::array needs the GIL.
+	      std::vector<SynapseIdx> overlaps;
 	      {
 	          py::gil_scoped_release release;
-	          const auto& overlaps = self.compute( input, learn, output );
-	          overlaps_copy.assign( overlaps.begin(), overlaps.end() );
+	          overlaps = self.compute( input, learn, output );
 	      }
-	      return py::array_t<SynapseIdx>( overlaps_copy.size(), overlaps_copy.data() );
+	      return py::array_t<SynapseIdx>( overlaps.size(), overlaps.data() );
 	    },
 R"(
 This is the main workhorse method of the SpatialPooler class. This method
@@ -409,6 +410,13 @@ Argument output An SDR representing the winning columns after
         });
 
         // getBoostedOverlaps
+        // NOTE (round-3 fast path): with boostStrength == 0 boosting is
+        // skipped entirely and inhibition runs on the raw integer overlaps,
+        // so this buffer is no longer refreshed each step -- it returns the
+        // values from the last step that actually boosted (or an empty/
+        // stale array if boosting was never enabled). With boosting on,
+        // behaviour is unchanged. Purely a debug/inspection getter; nothing
+        // in the algorithms reads it back.
         py_SpatialPooler.def("getBoostedOverlaps", [](SpatialPooler& self)
         {
             auto overlaps = self.getBoostedOverlaps();

@@ -171,7 +171,8 @@ Segment Connections::createSegment(const CellIdx cell,
 
 Synapse Connections::createSynapse(Segment segment,
                                    CellIdx presynapticCell,
-                                   Permanence permanence) {
+                                   Permanence permanence,
+                                   const bool skipDuplicateCheck) {
 
   // Skip cells that are already synapsed on by this segment
   // Biological motivation (?):
@@ -183,22 +184,29 @@ Synapse Connections::createSynapse(Segment segment,
   // That would give such input a stronger connection.
   // Synapses are supposed to have binary effects (0 or 1) but duplicate synapses give
   // them (synapses 0/1) varying levels of strength.
-  for (const Synapse& syn : synapsesForSegment(segment)) {
-    const CellIdx existingPresynapticCell = dataForSynapse(syn).presynapticCell; //TODO 1; add way to get all presynaptic cells for segment (fast)
-    if (presynapticCell == existingPresynapticCell) {
-      //synapse (connecting to this presyn cell) already exists on the segment; don't create a new one, exit early and return the existing
-      NTA_ASSERT(synapseExists_(syn));
-      //TODO what is the strategy on creating a new synapse, while the same already exists (on the same segment, presynapticCell) ??
-      //1. just keep the older (former default)
-      //2. throw an error (ideally, user should not createSynapse() but rather updateSynapsePermanence())
-      //3. create a duplicit new synapse -- NO. This is the only choice that is incorrect! HTM works on binary synapses, duplicates would break that.
-      //4. update to the max of the permanences (default)
+  //
+  // This scan is O(existing synapses on the segment), so adding a whole
+  // potential pool one synapse at a time is O(n^2). Callers that can
+  // guarantee no duplicate (see the header contract, e.g. SP::initialize)
+  // pass skipDuplicateCheck=true to bypass it; the result is identical.
+  if (!skipDuplicateCheck) {
+    for (const Synapse& syn : synapsesForSegment(segment)) {
+      const CellIdx existingPresynapticCell = dataForSynapse(syn).presynapticCell; //TODO 1; add way to get all presynaptic cells for segment (fast)
+      if (presynapticCell == existingPresynapticCell) {
+        //synapse (connecting to this presyn cell) already exists on the segment; don't create a new one, exit early and return the existing
+        NTA_ASSERT(synapseExists_(syn));
+        //TODO what is the strategy on creating a new synapse, while the same already exists (on the same segment, presynapticCell) ??
+        //1. just keep the older (former default)
+        //2. throw an error (ideally, user should not createSynapse() but rather updateSynapsePermanence())
+        //3. create a duplicit new synapse -- NO. This is the only choice that is incorrect! HTM works on binary synapses, duplicates would break that.
+        //4. update to the max of the permanences (default)
 
-      auto& synData = synapses_[syn];
-      if(permanence > synData.permanence) updateSynapsePermanence(syn, permanence);
-      return syn;
-    }
-  } //else: the new synapse is not duplicit, so keep creating it.
+        auto& synData = synapses_[syn];
+        if(permanence > synData.permanence) updateSynapsePermanence(syn, permanence);
+        return syn;
+      }
+    } //else: the new synapse is not duplicit, so keep creating it.
+  }
 
   // Get an index into the synapses_ list, for the new synapse to reside at.
   Synapse synapse;
@@ -404,8 +412,11 @@ void Connections::updateSynapsePermanence(const Synapse synapse,
       potentialPreseg.push_back( segment );
     }
 
-    for (auto h : eventHandlers_) { //TODO handle callbacks in performance-critical method only in Debug?
-      h.second->onUpdateSynapsePermanence(synapse, permanence);
+    if (!eventHandlers_.empty()) { // callbacks are only registered by debug/inspection tooling;
+                                   // skip the map iteration setup on the per-synapse hot path.
+      for (auto h : eventHandlers_) {
+        h.second->onUpdateSynapsePermanence(synapse, permanence);
+      }
     }
 }
 
@@ -456,9 +467,14 @@ void Connections::reset() noexcept
   currentUpdates_.clear();
 }
 
-vector<SynapseIdx> Connections::computeActivity(const vector<CellIdx> &activePresynapticCells, const bool learn) {
-
-  vector<SynapseIdx> numActiveConnectedSynapsesForSegment(segments_.size(), 0);
+void Connections::computeActivityConnected_(vector<SynapseIdx> &out,
+                                            const vector<CellIdx> &activePresynapticCells,
+                                            const bool learn) {
+  // assign() reuses the caller's existing capacity -- for the in-place
+  // overload below this is what turns the per-step, segment-count-sized
+  // allocation (which grows as the TM learns) into a zero-allocation
+  // overwrite.
+  out.assign(segments_.size(), 0);
   if(learn) iteration_++;
 
   if( timeseries_ ) {
@@ -482,11 +498,48 @@ vector<SynapseIdx> Connections::computeActivity(const vector<CellIdx> &activePre
   for (const auto& cell : activePresynapticCells) {
     if (cell < connSize) {
       for(const auto& segment : connectedSegmentsForPresynapticCell_[cell]) {
-        ++numActiveConnectedSynapsesForSegment[segment];
+        ++out[segment];
       }
     }
   }
+}
+
+
+vector<SynapseIdx> Connections::computeActivity(const vector<CellIdx> &activePresynapticCells, const bool learn) {
+
+  vector<SynapseIdx> numActiveConnectedSynapsesForSegment;
+  computeActivityConnected_(numActiveConnectedSynapsesForSegment, activePresynapticCells, learn);
   return numActiveConnectedSynapsesForSegment;
+}
+
+
+void Connections::computeActivity(
+    vector<SynapseIdx> &numActiveConnectedSynapsesForSegment,
+    vector<SynapseIdx> &numActivePotentialSynapsesForSegment,
+    const vector<CellIdx> &activePresynapticCells,
+    const bool learn) {
+  // Fully in-place steady-state variant: both outputs are reusable caller
+  // buffers, resized with retained capacity -- no per-step vector
+  // materialisation at all (see the header documentation). Shares the exact
+  // same core and loop order as the by-value overloads, so results are
+  // bit-exact.
+  computeActivityConnected_(numActiveConnectedSynapsesForSegment,
+                            activePresynapticCells, learn);
+
+  // Iterate through all potential synapses.
+  numActivePotentialSynapsesForSegment.assign(
+      numActiveConnectedSynapsesForSegment.begin(),
+      numActiveConnectedSynapsesForSegment.end());
+
+  // Same direct-index optimisation as the connected loop above.
+  const auto potSize = potentialSegmentsForPresynapticCell_.size();
+  for (const auto& cell : activePresynapticCells) {
+    if (cell < potSize) {
+      for(const auto& segment : potentialSegmentsForPresynapticCell_[cell]) {
+        ++numActivePotentialSynapsesForSegment[segment];
+      }
+    }
+  }
 }
 
 
@@ -496,8 +549,13 @@ vector<SynapseIdx> Connections::computeActivity(
     const bool learn) {
   NTA_ASSERT(numActivePotentialSynapsesForSegment.size() == segments_.size());
 
-  // Iterate through all connected synapses.
-  const vector<SynapseIdx>& numActiveConnectedSynapsesForSegment = computeActivity( activePresynapticCells, learn );
+  // Legacy API kept for compatibility (caller pre-sizes the potential buffer
+  // and takes the connected counts by value). Delegates to the same shared
+  // core as the other overloads; owning the vector directly also drops the
+  // extra full copy the old return-from-const-ref version paid.
+  vector<SynapseIdx> numActiveConnectedSynapsesForSegment;
+  computeActivityConnected_(numActiveConnectedSynapsesForSegment,
+                            activePresynapticCells, learn);
   NTA_ASSERT(numActiveConnectedSynapsesForSegment.size() == segments_.size());
 
   // Iterate through all potential synapses.
@@ -749,8 +807,15 @@ void Connections::growSynapses(const Segment segment,
 					  const size_t maxNew,
 					  const size_t maxSynapsesPerSegment) {
 
-  //0. copy input vector - candidate cells on input
-  vector<CellIdx> candidates(growthCandidates.begin(), growthCandidates.end());
+  //0. copy input vector - candidate cells on input.
+  // The copy itself is required (the list gets shuffled below), but it now
+  // lands in a long-lived member scratch instead of a fresh vector: this
+  // function runs for every learning segment on every step, and assign()
+  // reuses the scratch's capacity, so steady-state cost is a memcpy with no
+  // allocation. See the member's docs for the (single-threaded,
+  // non-reentrant) safety argument.
+  vector<CellIdx> &candidates = growCandidatesScratch_;
+  candidates.assign(growthCandidates.begin(), growthCandidates.end());
 
   //1. figure the number of new synapses to grow
   size_t nActual = std::min(maxNew, candidates.size());

@@ -2,6 +2,11 @@
 # HTM Community Edition of NuPIC
 # Copyright (C) 2013-2015, Numenta, Inc.
 #   Migrated to scikit-build-core:  David Keeney, dkeeney@gmail.com, Dec 2024
+#   Trimmed for PyHTM-core: only the algorithm/encoder/SDR engine is built.
+#     Removed: engine/ (Network API), regions/, ntypes/, RESTapi, SDRClassifier,
+#     SimHashDocumentEncoder and their external deps (libyaml, sqlite3,
+#     cpp-httplib, digestpp, eigen, mnist, gtest). PyHTM drives SP/TM/SDR/RDSE
+#     directly through the Python bindings, so none of that code ever ran.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero Public License version 3 as
@@ -52,10 +57,10 @@ set(HTM_CORE_VERSION ${VERSION})
 configure_file(
   "${PROJECT_SOURCE_DIR}/htm/Version.hpp.in"
   "${PROJECT_BINARY_DIR}/Version.hpp")
-  
+
 
 ############ htm_core Library ######################################
-# Setup htm_core static library, consisting of our own sources and yaml libraries;
+# Setup htm_core static library from our own sources.
 #
 # this is an intermediate archive that will be merged with external static
 # libraries in a subsequent step to produce the htm_core "combined" static
@@ -72,8 +77,6 @@ set(algorithm_files
     htm/algorithms/AnomalyLikelihood.hpp
     htm/algorithms/Connections.cpp
     htm/algorithms/Connections.hpp
-    htm/algorithms/SDRClassifier.cpp
-    htm/algorithms/SDRClassifier.hpp
     htm/algorithms/SpatialPooler.cpp
     htm/algorithms/SpatialPooler.hpp
     htm/algorithms/TemporalMemory.cpp
@@ -81,7 +84,7 @@ set(algorithm_files
 )
 
 
-set(encoders_files 
+set(encoders_files
     htm/encoders/BaseEncoder.hpp
     htm/encoders/DateEncoder.cpp
     htm/encoders/DateEncoder.hpp
@@ -89,84 +92,14 @@ set(encoders_files
     htm/encoders/ScalarEncoder.hpp
     htm/encoders/RandomDistributedScalarEncoder.hpp
     htm/encoders/RandomDistributedScalarEncoder.cpp
-    htm/encoders/SimHashDocumentEncoder.hpp
-    htm/encoders/SimHashDocumentEncoder.cpp
-)
-    
-set(engine_files
-    htm/engine/Input.cpp
-    htm/engine/Input.hpp
-    htm/engine/Link.cpp
-    htm/engine/Link.hpp
-    htm/engine/Network.cpp
-    htm/engine/Network.hpp
-    htm/engine/Output.cpp
-    htm/engine/Output.hpp
-    htm/engine/Region.cpp
-    htm/engine/Region.hpp
-    htm/engine/RegionImpl.cpp
-    htm/engine/RegionImpl.hpp
-    htm/engine/RegionImplFactory.cpp
-    htm/engine/RegionImplFactory.hpp
-    htm/engine/RegisteredRegionImpl.hpp
-    htm/engine/RegisteredRegionImplCpp.hpp
-    htm/engine/RESTapi.hpp
-    htm/engine/RESTapi.cpp
-    htm/engine/RawInput.hpp
-    htm/engine/Spec.cpp
-    htm/engine/Spec.hpp
-    htm/engine/Watcher.cpp
-    htm/engine/Watcher.hpp
 )
 
-
-set(ntypes_files
-    htm/ntypes/Array.hpp
-    htm/ntypes/ArrayBase.cpp
-    htm/ntypes/ArrayBase.hpp
-    htm/ntypes/BasicType.cpp
-    htm/ntypes/BasicType.hpp
-    htm/ntypes/Collection.hpp
-    htm/ntypes/Dimensions.hpp
-    htm/ntypes/Value.cpp
-    htm/ntypes/Value.hpp
-)
-  
 set(os_files
     htm/os/Directory.cpp
     htm/os/Directory.hpp
-    htm/os/Env.cpp
-    htm/os/Env.hpp
     htm/os/ImportFilesystem.hpp
     htm/os/Path.cpp
     htm/os/Path.hpp
-    htm/os/Timer.cpp
-    htm/os/Timer.hpp    
-)
-
-set(regions_files
-    htm/regions/DateEncoderRegion.cpp
-    htm/regions/DateEncoderRegion.hpp    
-    htm/regions/ClassifierRegion.cpp
-    htm/regions/ClassifierRegion.hpp
-    htm/regions/ScalarEncoderRegion.cpp
-    htm/regions/ScalarEncoderRegion.hpp    
-    htm/regions/RDSEEncoderRegion.cpp
-    htm/regions/RDSEEncoderRegion.hpp
-    htm/regions/SPRegion.cpp
-    htm/regions/SPRegion.hpp
-    htm/regions/TestNode.cpp
-    htm/regions/TestNode.hpp
-    htm/regions/TMRegion.cpp
-    htm/regions/TMRegion.hpp
-    htm/regions/VectorFile.cpp
-    htm/regions/VectorFile.hpp
-    htm/regions/FileOutputRegion.cpp
-    htm/regions/FileOutputRegion.hpp
-    htm/regions/FileInputRegion.cpp
-    htm/regions/FileInputRegion.hpp  
-    htm/regions/DatabaseRegion.cpp
-    htm/regions/DatabaseRegion.hpp
 )
 
 set(types_files
@@ -178,6 +111,7 @@ set(types_files
 )
 
 set(utils_files
+    htm/utils/Log.cpp
     htm/utils/Log.hpp
     htm/utils/MovingAverage.cpp
     htm/utils/MovingAverage.hpp
@@ -192,15 +126,10 @@ set(utils_files
 )
 
 
-
-
 #set up file tabs in Visual Studio
 source_group("algorithms" FILES ${algorithm_files})
 source_group("encoders" FILES ${encoders_files})
-source_group("engine" FILES ${engine_files})
-source_group("ntypes" FILES ${ntypes_files})
 source_group("os" FILES ${os_files})
-source_group("regions" FILES ${regions_files})
 source_group("types" FILES ${types_files})
 source_group("utils" FILES ${utils_files})
 
@@ -218,10 +147,7 @@ source_group("utils" FILES ${utils_files})
 add_library(${src_objlib} OBJECT 
     ${algorithm_files} 
     ${encoders_files} 
-    ${engine_files} 
-    ${ntypes_files} 
     ${os_files} 
-    ${regions_files} 
     ${types_files} 
     ${utils_files}
 )
@@ -243,12 +169,9 @@ if(${HTM_IWYU})
 endif()
 
 ############ Building Static LIB #############################################
-# build static htm_core_solo.a with libyaml, sqlite3, common.
+# build static htm_core.a with the common (MurmurHash3) objects.
 # uses objects compiled for src_objlib
-# Add the object libraries to the source list of htm_core
 set(EXTRA_LIBS
-    $<TARGET_OBJECTS:${libyaml_TARGET}>
-    $<TARGET_OBJECTS:${sqlite3_TARGET}>
     $<TARGET_OBJECTS:${common_TARGET}>
 )
 
@@ -273,15 +196,10 @@ else()
   )
   target_link_libraries(${src_lib_shared}
       	PUBLIC
-	    ${libyaml_TARGET}
-	    ${sqlite3_TARGET}
 	    ${common_TARGET}
   )
   set_target_properties(${src_lib_shared} PROPERTIES OUTPUT_NAME ${core_library})
 endif()
-
-
-
 
 
 ############ INSTALL ######################################
@@ -317,19 +235,10 @@ foreach(dir ${EXTERNAL_INCLUDES})
         DESTINATION "${CMAKE_SOURCE_DIR}/build/Release/include"
         FILES_MATCHING PATTERN "*.h*" PATTERN "*.hpp" PATTERN "*.inl")
 endforeach()
-# Eigen requires special handling
-# locate the Eigen source directory and copy all of Eigen folder to build/Release/Include/Eigen.
-# The Eigen folder contains more than just include files.
-install(DIRECTORY ${eigen_INCLUDE_DIR}/Eigen
-      MESSAGE_NEVER
-	  DESTINATION ${CMAKE_SOURCE_DIR}/build/Release/include
-)
-    
+
 install(FILES 
     ${CMAKE_SOURCE_DIR}/LICENSE.txt  
     ${CMAKE_SOURCE_DIR}/README.md  
     ${CMAKE_SOURCE_DIR}/VERSION  
     DESTINATION ${CMAKE_SOURCE_DIR}/build/Release
 )
-
-
