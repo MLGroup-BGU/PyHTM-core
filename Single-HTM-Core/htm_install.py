@@ -42,6 +42,36 @@ def _have(exe):
     return shutil.which(exe) is not None
 
 
+def purge_interrupted_build_leftovers():
+    """Self-heal after a build that was stopped mid-way (Ctrl+C / kill).
+
+    This script builds INCREMENTALLY by default (no --clean), so a compiler
+    or archiver killed mid-write can leave a 0-byte .o/.obj (or library)
+    behind; being newer than its sources, the next build treats it as up to
+    date and silently archives/links it -- the failure only surfaces later
+    as 'undefined symbol'. A valid artifact of these kinds is never 0
+    bytes, so deleting empty ones only forces the build system to redo the
+    work it failed to finish; the build logic itself is untouched.
+    """
+    exts = ('.o', '.obj', '.a', '.lib', '.so', '.pyd', '.dll')
+    removed = 0
+    for dirpath, _dirnames, filenames in os.walk(BUILD_DIR):
+        for name in filenames:
+            if name.endswith(exts):
+                path = os.path.join(dirpath, name)
+                try:
+                    if os.path.getsize(path) == 0:
+                        os.remove(path)
+                        removed += 1
+                        print(f"Removed 0-byte leftover of an interrupted "
+                              f"build: {path}")
+                except OSError:
+                    pass
+    if removed:
+        print(f"Purged {removed} interrupted-build leftover(s); "
+              f"the build will regenerate them.")
+
+
 def preflight():
     print("== Single-HTM-Core build: pre-flight checks ==")
     print(f"   python   : {sys.version.split()[0]} ({sys.executable})")
@@ -92,6 +122,7 @@ def main():
     if args.clean:
         shutil.rmtree(BUILD_DIR, ignore_errors=True)
 
+    purge_interrupted_build_leftovers()
     preflight()
     configure(args)
     build(args)

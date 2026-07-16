@@ -25,35 +25,73 @@ import sys
 import contextlib
 import re
 
+
+def purge_interrupted_build_leftovers():
+    """Self-heal after a build that was stopped mid-way (Ctrl+C / kill).
+
+    A compiler, archiver, or wheel copy that dies mid-write can leave a
+    0-byte file behind. Because that file is NEWER than its sources, the
+    incremental build then treats it as up to date and silently packages
+    it:
+      * a 0-byte .o gets archived into libhtm_core -> the wheel links,
+        installs, and only fails at import time with 'undefined symbol';
+      * a 0-byte htm_core.lib / libhtm_core.a makes the 'already built,
+        skipping' guard below skip the C++ rebuild forever;
+      * a 0-byte wheel in dist/ makes the 'wheel already exists' guard
+        hand pip a corrupt file, forever.
+    A valid artifact of any of these kinds is never 0 bytes, so deleting
+    empty ones only ever forces the build system to redo work it failed
+    to finish. The build logic itself is untouched -- this runs once,
+    before any build/skip decision is made.
+    """
+    exts = ('.o', '.obj', '.a', '.lib', '.so', '.pyd', '.dll', '.whl')
+    removed = 0
+    for top in ('build', 'dist'):
+        for dirpath, _dirnames, filenames in os.walk(top):
+            for name in filenames:
+                if name.endswith(exts):
+                    path = os.path.join(dirpath, name)
+                    try:
+                        if os.path.getsize(path) == 0:
+                            os.remove(path)
+                            removed += 1
+                            print(f"Removed 0-byte leftover of an "
+                                  f"interrupted build: {path}")
+                    except OSError:
+                        pass
+    if removed:
+        print(f"Purged {removed} interrupted-build leftover(s); "
+              f"the build will regenerate them.")
+
+
 def main():
     # Check Python version
     if sys.version_info < (3, 9):
         print("Error: This project requires Python 3.9 or later.")
         print("You are running Python {}.{}.".format(sys.version_info.major, sys.version_info.minor))
         sys.exit(1)
-        
+
     # Check if running in a virtual environment
     if not is_running_in_docker() and not in_venv():
-      print("Error: Not running in a python virtual environment.")
-      print("Please create a virtual environment before running this script.")
-      print("You can create one using:")
-      print("  python -m venv .venv")
-      print("And activate it using:")
-      print("  .venv\\Scripts\\activate  (Windows)")
-      print("  source .venv/bin/activate (Linux/macOS)")
-      sys.exit(1)
+        print("Error: Not running in a python virtual environment.")
+        print("Please create a virtual environment before running this script.")
+        print("You can create one using:")
+        print("  python -m venv .venv")
+        print("And activate it using:")
+        print("  .venv\\Scripts\\activate  (Windows)")
+        print("  source .venv/bin/activate (Linux/macOS)")
+        sys.exit(1)
 
-            
     # Install build dependencies
     print("Installing build dependencies...")
     pip_args = [sys.executable, '-m', 'pip', 'install', '--upgrade']
     # Add --ignore-installed and --break-system-packages for Docker
     if is_running_in_docker():
         pip_args.extend(['--ignore-installed', '--break-system-packages'])
-    pip_args.extend(['pip', 'build', 'setuptools', 'wheel', 'pybind11', 
+    pip_args.extend(['pip', 'build', 'setuptools', 'wheel', 'pybind11',
                      'packaging', 'pytest', 'requests'])
-    subprocess.run(pip_args, check=True)     
-              
+    subprocess.run(pip_args, check=True)
+
     # Get the project version and minimum Cmake version from pyproject.toml
     # Install toml if needed (for Python < 3.11)
     if sys.version_info < (3, 11):
@@ -71,10 +109,10 @@ def main():
         # tomllib expects binary mode
         with open("pyproject.toml", "rb") as f:
             pyproject = toml.load(f)
-        
+
     project_version = pyproject["project"]["version"]
     print(f"Version: {project_version}")
-        
+
     # Ensure CMake is installed and meets the minimum version requirement
     import re
     min_cmake_version = get_cmake_minimum_version()
@@ -85,17 +123,20 @@ def main():
             cmake_args.extend(['--ignore-installed', '--break-system-packages'])
         cmake_args.append(f'cmake>={min_cmake_version}')
         subprocess.run(cmake_args, check=True)
-         
-    # if the htm_core library does not exist, go build it.   
+
+    # Self-heal: drop 0-byte leftovers of an interrupted (Ctrl+C / killed)
+    # build BEFORE any build/skip decision looks at the tree.
+    purge_interrupted_build_leftovers()
+
+    # if the htm_core library does not exist, go build it.
     htm_core_lib_path = os.path.join("build", "Release", "lib")
     if not (os.path.exists(os.path.join(htm_core_lib_path, "htm_core.lib")) or
-            os.path.exists(os.path.join(htm_core_lib_path, "libhtm_core.a"))) :
+            os.path.exists(os.path.join(htm_core_lib_path, "libhtm_core.a"))):
 
         # Build the C++ components with CMake
         print("Building C++ components...")
         shutil.rmtree("build/cmake", ignore_errors=True)  # Clear cache, Ignore errors if the directory doesn't exist
-        shutil.rmtree("dist", ignore_errors=True)         # Clear wheels, Ignore errors if the directory doesn't exist
-        
+        shutil.rmtree("dist", ignore_errors=True)  # Clear wheels, Ignore errors if the directory doesn't exist
 
         # Build the C++ htm_core library
         cmake_command = [
@@ -108,20 +149,20 @@ def main():
         ]
         print("CMake command:", cmake_command)  # Print the command before executing it
         subprocess.run(cmake_command, check=True, shell=False)
-        
+
         cmake_command = [
-            "cmake", 
-            "--build", 
-            "build/cmake", 
-            "--config", 
-            "Release", 
-            "--target", 
+            "cmake",
+            "--build",
+            "build/cmake",
+            "--config",
+            "Release",
+            "--target",
             "install"]
         print("CMake command:", cmake_command)
         subprocess.run(cmake_command, check=True)
         print("C++ component build completed")
         print("")
-        
+
     else:
         print("C++ components already built. Skipping C++ build...")
 
@@ -129,26 +170,26 @@ def main():
     if wheel_file == None:
         # Build the Python package with scikit-build-core
         print("Building Python package...")
-    
+
         cmake_command = [sys.executable, "-m", "build"]
         print("CMake command:", cmake_command)
         subprocess.run(cmake_command, check=True)
         print("")
     else:
         print("Wheel already exists, skipping build of extensions...")
-    
+
     # locate the .whl file we just created
     wheel_file = find_wheel_file(project_version)
     if wheel_file is None:
         print(f"Error: Could not find the wheel we just created in the 'dist' directory.")
         sys.exit(1)
-       
+
     # Unpack the wheel (for testing)
     """
     print("Unpack the wheel...")
     subprocess.run([sys.executable, '-m', 'wheel', 'unpack', wheel_file], check=True)
     """
-        
+
     # Install the package in Python.
     print("Installing the wheel...")
     cmake_command = [sys.executable, '-m', 'pip', 'install', '--force-reinstall']
@@ -159,17 +200,17 @@ def main():
     subprocess.run(cmake_command, check=True)
 
     print('Installation complete!')
-    
 
-    
+
 def in_venv() -> bool:
     """Determine whether Python is running from a venv."""
     import sys
     if hasattr(sys, 'real_prefix'):
         return True
     pfx = getattr(sys, 'base_prefix', sys.prefix)
-    return pfx != sys.prefix    
-    
+    return pfx != sys.prefix
+
+
 def is_running_in_docker():
     """ Checks if the script is running inside a Docker container. """
     # Check for DOCKER_CONTAINER environment variable (set in Dockerfile)
@@ -180,8 +221,9 @@ def is_running_in_docker():
         with open('/proc/1/cgroup', 'r') as f:
             return 'docker' in f.read()
     except FileNotFoundError:
-        return False  # Not Linux, so probably not Docker    
-        
+        return False  # Not Linux, so probably not Docker
+
+
 def get_cmake_minimum_version(cmake_file="CMakeLists.txt"):
     """Extracts the minimum required CMake version from a CMakeLists.txt file."""
     with open(cmake_file, "r") as f:
@@ -189,8 +231,9 @@ def get_cmake_minimum_version(cmake_file="CMakeLists.txt"):
             match = re.search(r"cmake_minimum_required\(VERSION\s*(\s*[\d.]+)", line)
             if match:
                 return match.group(1)
-    return None 
-        
+    return None
+
+
 def check_cmake_version(min_version):
     """Checks the CMake version and returns True if it meets the minimum requirement."""
     from packaging import version
@@ -223,7 +266,8 @@ def check_cmake_version(min_version):
     except ValueError:
         print(f"Error: Could not parse CMake version: {version_str}")
         sys.exit(1)
-        
+
+
 def find_wheel_file(project_version):
     """Locates the wheel file in dist with matching Python and project versions."""
     wheel_file = None
@@ -236,7 +280,6 @@ def find_wheel_file(project_version):
                 wheel_file = os.path.join('dist', whl)
                 break
     return wheel_file
-
 
 
 if __name__ == "__main__":
