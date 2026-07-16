@@ -945,6 +945,7 @@ private:
   std::vector<std::vector<Synapse>> potentialSynapsesForPresynapticCell_;
   std::vector<std::vector<Synapse>> connectedSynapsesForPresynapticCell_;
   std::vector<std::vector<Segment>> potentialSegmentsForPresynapticCell_;
+
   std::vector<std::vector<Segment>> connectedSegmentsForPresynapticCell_;
 
   // These three members should be used when working with highly correlated

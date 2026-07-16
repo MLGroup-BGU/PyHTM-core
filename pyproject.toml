@@ -82,7 +82,7 @@ test = [
 # see https://github.com/scikit-build/scikit-build-core for options
 minimum-version = "build-system.requires"
 cmake.build-type = "Release"           # Or "Debug" if needed 
-wheel.packages = ["py/htm"]            # where to find python source packages to be included
+wheel.packages = ["Single-HTM-Core/py/htm"]            # where to find python source packages to be included
 cmake.args = [
   "-DBINDING_BUILD=Python3",    # For Python build
 ]

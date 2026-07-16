@@ -144,6 +144,17 @@ source_group("utils" FILES ${utils_files})
 #
 # The price you pay is that the object files must be built as position-independent code.
 #
+# Integer AVX-512 histogram kernel (vpconflictd + gather/scatter) in
+# Connections.cpp: enable F+CD for THIS file only, on top of the library's
+# v3 cap. The kernel is integer-only (order-independent => bit-exact by
+# construction) and compiles in ONLY when the build host actually detected
+# level 4, so a v2/v3 machine never receives AVX-512 instructions.
+if(NOT MSVC AND DEFINED HTM_MARCH_DETECTED AND HTM_MARCH_DETECTED GREATER 3)
+        message(STATUS "Connections.cpp: +avx512f,cd (integer histogram kernel)")
+        set_source_files_properties(htm/algorithms/Connections.cpp
+                PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512cd")
+endif()
+
 add_library(${src_objlib} OBJECT 
     ${algorithm_files} 
     ${encoders_files} 

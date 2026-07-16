@@ -26,6 +26,9 @@
 #include <set>
 
 #include <htm/algorithms/Connections.hpp>
+#if defined(__AVX512F__) && defined(__AVX512CD__)
+  #include <immintrin.h>
+#endif
 
 
 using std::endl;
@@ -467,6 +470,56 @@ void Connections::reset() noexcept
   currentUpdates_.clear();
 }
 
+
+/* ---------------------------------------------------------------------------
+ * Segment-histogram accumulation: for every active presynaptic cell, bump
+ * the counter of every segment in its (contiguous) list.
+ *
+ * Scalar semantics: ++out[segment] for each listed segment, in list order.
+ * Integer addition is order-independent, so ANY accumulation strategy is
+ * bit-identical to the scalar loop -- which is exactly what the AVX-512
+ * path below exploits:
+ *   - indices are u32 -> 16 per zmm register;
+ *   - vpconflictd detects duplicate segment ids inside the 16-lane window;
+ *   - no duplicates (the common case once the histogram is wider than a
+ *     few hundred bins): gather 16 counters, +1, scatter back;
+ *   - any duplicate or a sub-16 tail: plain scalar increments.
+ * Counters accumulate into a u32 scratch (public counters are u16, which
+ * dword scatters would corrupt pairwise); the caller folds scratch into
+ * the u16 output afterwards. Guarded at COMPILE time: builds whose CPU
+ * level lacks AVX-512 (HTM_MARCH < x86-64-v4) compile the scalar loop
+ * only, with zero overhead.
+ * ------------------------------------------------------------------------- */
+/* Per-thread u32 scratch: public counters are u16 (dword scatters would
+ * corrupt neighbor pairs), and each pool worker steps different Connections
+ * instances concurrently -- thread_local gives isolation with zero change
+ * to the Connections ABI. Capacity is retained across steps per thread. */
+static thread_local std::vector<htm::UInt32> tlsHist;
+
+static inline void accumulate_segment_list(htm::UInt32 *hist,
+                                           const htm::Segment *idx,
+                                           std::size_t n) {
+#if defined(__AVX512F__) && defined(__AVX512CD__)
+  std::size_t i = 0;
+  const __m512i ones = _mm512_set1_epi32(1);
+  for (; i + 16 <= n; i += 16) {
+    const __m512i vidx =
+        _mm512_loadu_si512(reinterpret_cast<const void *>(idx + i));
+    const __m512i conf = _mm512_conflict_epi32(vidx);
+    if (_mm512_test_epi32_mask(conf, conf) == 0) {
+      __m512i cur = _mm512_i32gather_epi32(vidx, hist, 4);
+      cur = _mm512_add_epi32(cur, ones);
+      _mm512_i32scatter_epi32(hist, vidx, cur, 4);
+    } else {
+      for (std::size_t j = 0; j < 16; ++j) ++hist[idx[i + j]];
+    }
+  }
+  for (; i < n; ++i) ++hist[idx[i]];
+#else
+  for (std::size_t i = 0; i < n; ++i) ++hist[idx[i]];
+#endif
+}
+
 void Connections::computeActivityConnected_(vector<SynapseIdx> &out,
                                             const vector<CellIdx> &activePresynapticCells,
                                             const bool learn) {
@@ -495,13 +548,15 @@ void Connections::computeActivityConnected_(vector<SynapseIdx> &out,
   // lookup into a contiguous O(1) array access is the main payoff of the
   // map -> vector switch.
   const auto connSize = connectedSegmentsForPresynapticCell_.size();
+  tlsHist.assign(segments_.size(), 0u);
   for (const auto& cell : activePresynapticCells) {
     if (cell < connSize) {
-      for(const auto& segment : connectedSegmentsForPresynapticCell_[cell]) {
-        ++out[segment];
-      }
+      const auto &lst = connectedSegmentsForPresynapticCell_[cell];
+      accumulate_segment_list(tlsHist.data(), lst.data(), lst.size());
     }
   }
+  for (std::size_t s = 0; s < tlsHist.size(); ++s)
+    out[s] = static_cast<SynapseIdx>(tlsHist[s]);
 }
 
 
@@ -533,13 +588,17 @@ void Connections::computeActivity(
 
   // Same direct-index optimisation as the connected loop above.
   const auto potSize = potentialSegmentsForPresynapticCell_.size();
+  tlsHist.assign(segments_.size(), 0u);
   for (const auto& cell : activePresynapticCells) {
     if (cell < potSize) {
-      for(const auto& segment : potentialSegmentsForPresynapticCell_[cell]) {
-        ++numActivePotentialSynapsesForSegment[segment];
-      }
+      const auto &lst = potentialSegmentsForPresynapticCell_[cell];
+      accumulate_segment_list(tlsHist.data(), lst.data(), lst.size());
     }
   }
+  for (std::size_t s = 0; s < tlsHist.size(); ++s)
+    numActivePotentialSynapsesForSegment[s] =
+        static_cast<SynapseIdx>(numActivePotentialSynapsesForSegment[s] +
+                                tlsHist[s]);
 }
 
 
@@ -565,13 +624,17 @@ vector<SynapseIdx> Connections::computeActivity(
 
   // Same direct-index optimisation as the connected loop above.
   const auto potSize = potentialSegmentsForPresynapticCell_.size();
+  tlsHist.assign(segments_.size(), 0u);
   for (const auto& cell : activePresynapticCells) {
     if (cell < potSize) {
-      for(const auto& segment : potentialSegmentsForPresynapticCell_[cell]) {
-        ++numActivePotentialSynapsesForSegment[segment];
-      }
+      const auto &lst = potentialSegmentsForPresynapticCell_[cell];
+      accumulate_segment_list(tlsHist.data(), lst.data(), lst.size());
     }
   }
+  for (std::size_t s = 0; s < tlsHist.size(); ++s)
+    numActivePotentialSynapsesForSegment[s] =
+        static_cast<SynapseIdx>(numActivePotentialSynapsesForSegment[s] +
+                                tlsHist[s]);
   return numActiveConnectedSynapsesForSegment;
 }
 

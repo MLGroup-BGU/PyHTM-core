@@ -27,8 +27,8 @@
 #             build/Thirdparty/<dependency_name>
 
 
-include(external/common.cmake)          # Build instructions for the common library
-include(external/cereal.cmake)          # Build instructions for cereal
+include(${CMAKE_SOURCE_DIR}/Single-HTM-Core/external/common.cmake)          # Build instructions for the common library
+include(${CMAKE_SOURCE_DIR}/Single-HTM-Core/external/cereal.cmake)          # Build instructions for cereal
 
 
 # Define EXTERNAL_INCLUDES after including bootstrap.cmake
