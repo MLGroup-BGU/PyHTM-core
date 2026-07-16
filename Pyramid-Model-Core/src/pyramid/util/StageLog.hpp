@@ -79,21 +79,6 @@ struct RateWindow {
     }
 };
 
-/* Renders "[==========>.............]" into buf (needs width + 3 bytes). */
-inline void progress_bar(double frac, char *buf, int width) {
-    if (frac < 0) frac = 0;
-    if (frac > 1) frac = 1;
-    const int filled = static_cast<int>(frac * width + 0.5);
-    int i = 0;
-    buf[i++] = '[';
-    for (int b = 0; b < width; ++b)
-        buf[i++] = b < filled
-                       ? ((b == filled - 1 && filled < width) ? '>' : '=')
-                       : '.';
-    buf[i++] = ']';
-    buf[i] = '\0';
-}
-
 inline std::function<void()> &interrupt_hook() {
     static std::function<void()> hook;
     return hook;
@@ -162,6 +147,46 @@ inline const char *color_of(Stage s) {
     return "";
 }
 }  // namespace detail
+
+/* Renders the progress bar into `buf` as a SOLID FILL that grows:
+ *   VT/UTF-8 terminals: [██████████▍             ]
+ *       tqdm-style: the tip advances in 1/8-cell steps (U+2588 full block
+ *       plus the partial blocks U+2589..U+258F), i.e. width*8 steps overall
+ *       -- at width 24 the bar visibly moves every ~0.5% and full cells
+ *       merge into one solid, continuously growing rectangle.
+ *   plain fallback:     [##########..............]
+ * Block glyphs are 3 UTF-8 bytes, so `buf` must hold at least
+ * 3*width + 3 bytes ('[', ']', NUL); callers use width 24 with an
+ * 80-byte buffer. Off-terminal output (redirected runs, log files)
+ * stays pure ASCII, matching the banner policy above. */
+inline void progress_bar(double frac, char *buf, int width) {
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    const bool utf8 = detail::ansi_ok();
+    int i = 0;
+    buf[i++] = '[';
+    if (utf8) {
+        const int eighths = static_cast<int>(frac * width * 8 + 0.5);
+        const int full    = eighths / 8;   /* fully filled cells          */
+        const int rem     = eighths % 8;   /* 1..7 -> partial tip cell    */
+        for (int b = 0; b < width; ++b) {
+            if (b < full) {                        /* U+2588 FULL BLOCK   */
+                buf[i++] = '\xE2'; buf[i++] = '\x96'; buf[i++] = '\x88';
+            } else if (b == full && rem > 0) {     /* U+2589..U+258F tip  */
+                buf[i++] = '\xE2'; buf[i++] = '\x96';
+                buf[i++] = static_cast<char>(0x88 + (8 - rem));
+            } else {
+                buf[i++] = ' ';
+            }
+        }
+    } else {
+        const int filled = static_cast<int>(frac * width + 0.5);
+        for (int b = 0; b < width; ++b)
+            buf[i++] = (b < filled) ? '#' : '.';
+    }
+    buf[i++] = ']';
+    buf[i] = '\0';
+}
 
 /** Print a bold colored banner announcing that subsequent logs belong to
  *  stage `title`. */

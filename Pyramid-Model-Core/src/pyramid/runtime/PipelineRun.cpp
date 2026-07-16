@@ -511,7 +511,7 @@ std::int64_t PyramidRuntime::run_pipelined(RecordSource &source,
                     {
                         const std::int64_t remain = total - d;
                         const double eta = rate > 0 ? remain / rate : 0.0;
-                        char bar[32];
+                        char bar[80];
                         const double frac =
                             total > 0 ? static_cast<double>(d) / total : 0.0;
                         htm_pyramid::progress_bar(frac, bar, 24);

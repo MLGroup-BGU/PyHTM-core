@@ -572,9 +572,10 @@ void PyramidRuntime::run(
             std::chrono::steady_clock::now() - runStart).count();
         htm_pyramid::stage_banner(htm_pyramid::Stage::Done,
                                   "DONE -- run complete");
-        std::printf("[Run] %lld records in %.1fs (%.1f record/second), "
+        std::printf("[Run] %lld records in %s (%.1f record/second), "
                     "%lld total processed\n",
-                    static_cast<long long>(done), secs,
+                    static_cast<long long>(done),
+                    htm_pyramid::fmt_hms(secs).c_str(),
                     secs > 0 ? done / secs : 0.0,
                     static_cast<long long>(currentIter_));
         std::fflush(stdout);
@@ -627,7 +628,7 @@ void PyramidRuntime::run(
                     /* ETA from the current (windowed) speed. */
                     const std::int64_t remain = total - currentIter_;
                     const double eta = rate > 0 ? remain / rate : 0.0;
-                    char bar[32];
+                    char bar[80];
                     const double frac =
                         total > 0 ? static_cast<double>(currentIter_) / total
                                   : 0.0;
@@ -658,9 +659,10 @@ void PyramidRuntime::run(
     const std::int64_t done = currentIter_ - runFrom;
     htm_pyramid::stage_banner(htm_pyramid::Stage::Done,
                               "DONE -- run complete");
-    std::printf("[Run] %lld records in %.1fs (%.1f record/second), "
+    std::printf("[Run] %lld records in %s (%.1f record/second), "
                 "%lld total processed\n",
-                static_cast<long long>(done), secs,
+                static_cast<long long>(done),
+                htm_pyramid::fmt_hms(secs).c_str(),
                 secs > 0 ? done / secs : 0.0,
                 static_cast<long long>(currentIter_));
     std::fflush(stdout);
