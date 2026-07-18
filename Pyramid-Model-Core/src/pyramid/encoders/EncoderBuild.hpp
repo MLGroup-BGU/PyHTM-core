@@ -68,6 +68,11 @@ struct FeatureSpec {
     bool adaptive_reserve = false;
     double hybrid_ratio = 0.5;
 
+    /* linear: explicit range (both set -> used verbatim); otherwise the
+     * engine auto-calibrates from the training slice at these quantiles. */
+    std::optional<double> lin_min, lin_max;
+    double lin_p_low = 0.01, lin_p_high = 0.99;
+
     /* dual_scalar */
     DualOverrides dual;
 
@@ -80,7 +85,9 @@ struct FeatureSpec {
         return kind == FeatureKind::AdaptiveRdse ||
                kind == FeatureKind::HybridRdse ||
                kind == FeatureKind::DualScalar ||
-               (kind == FeatureKind::Rdse && !resolution.has_value());
+               (kind == FeatureKind::Rdse && !resolution.has_value()) ||
+               (kind == FeatureKind::Linear &&
+                !(lin_min.has_value() && lin_max.has_value()));
     }
 };
 

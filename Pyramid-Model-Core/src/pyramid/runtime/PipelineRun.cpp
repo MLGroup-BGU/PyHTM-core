@@ -72,7 +72,7 @@ void PyramidRuntime::allocate_pipeline() {
      */
     if (pipeK_ > 1) {
         pipeK_ *= 4;
-        if (pipeK_ < 8)  pipeK_ = 8;
+        if (pipeK_ < 4)  pipeK_ = 4;
         if (pipeK_ > 64) pipeK_ = 64;
     }
     /* PYRAMID_PIPE_DEPTH -- optional EXPERIMENT KNOB (environment variable).

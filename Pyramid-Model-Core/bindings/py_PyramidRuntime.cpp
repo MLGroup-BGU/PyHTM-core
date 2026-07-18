@@ -101,6 +101,7 @@ FeatureKind parse_kind(const std::string &k) {
     if (k == "adaptive_rdse") return FeatureKind::AdaptiveRdse;
     if (k == "hybrid_rdse") return FeatureKind::HybridRdse;
     if (k == "dual_scalar") return FeatureKind::DualScalar;
+    if (k == "linear") return FeatureKind::Linear;
     if (k == "categorical") return FeatureKind::Categorical;
     if (k == "date") return FeatureKind::Date;
     throw std::invalid_argument("unknown encoder kind: " + k);
@@ -113,6 +114,12 @@ FeatureSpec parse_feature(const py::dict &d) {
     s.size = get_or<std::int64_t>(d, "size", 0);
     s.activeBits = get_or<std::int64_t>(d, "activeBits", 0);
     s.seed = get_or<std::uint64_t>(d, "seed", 0);
+    if (d.contains("lin_min") && !d["lin_min"].is_none())
+        s.lin_min = d["lin_min"].cast<double>();
+    if (d.contains("lin_max") && !d["lin_max"].is_none())
+        s.lin_max = d["lin_max"].cast<double>();
+    s.lin_p_low = get_or<double>(d, "lin_p_low", s.lin_p_low);
+    s.lin_p_high = get_or<double>(d, "lin_p_high", s.lin_p_high);
     if (d.contains("shape") && !d["shape"].is_none())
         s.shape = d["shape"].cast<std::vector<htm::UInt>>();
     if (d.contains("resolution") && !d["resolution"].is_none())

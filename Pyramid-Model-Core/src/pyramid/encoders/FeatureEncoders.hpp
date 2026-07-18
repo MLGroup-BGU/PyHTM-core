@@ -7,6 +7,8 @@
  *   AdaptiveRdse      <- adaptive_rdse.AdaptiveRDSE        (distribution-aware)
  *   HybridRdse        <- hybrid_rdse.HybridRDSE            (adaptive || rdse)
  *   DualScalarEncoder <- dual_scalar_encoder.DualScalarEncoder (STATEFUL)
+ *   ShapedLinear      <- core ScalarEncoder over a calibrated [min, max]
+ *                        range + reserved out-of-range codes   (numeric)
  *   DateFeature       <- py/htm/encoders/date.DateEncoder  (composite datetime)
  *
  * plus `FeatureEncoder`, the small dispatcher a pyramid Feature holds.
@@ -37,6 +39,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -63,6 +66,41 @@ public:
 private:
     std::unique_ptr<htm::RandomDistributedScalarEncoder> rdse_;
     std::vector<htm::UInt> shape_;
+};
+
+/* ======================================================================== */
+/* ShapedLinear: the classic Numenta ScalarEncoder over a calibrated       */
+/* [min, max] range, extended with two RESERVED extreme codes so values    */
+/* beyond the calibrated range keep a distinct, maximally-surprising       */
+/* representation instead of being clipped onto an edge bucket:            */
+/*   bits [0, size-2w)        linear range (core ScalarEncoder)           */
+/*   bits [size-2w, size-w)   "under" code: v < min                       */
+/*   bits [size-w, size)      "over"  code: v > max                       */
+/* NaN encodes to the all-zero SDR (same convention as the RDSE path).    */
+/* ======================================================================== */
+class ShapedLinear {
+public:
+    /* `resolution`: when provided (the feature's config--data value), the
+     * linear range is bucketed at exactly that granularity and occupies
+     * only ceil(range/resolution)+w of the leading bits; without it the
+     * range spreads across all size-2w bits (finest possible buckets). */
+    ShapedLinear(std::int64_t size, std::int64_t activeBits, double minimum,
+                 double maximum, std::optional<double> resolution,
+                 std::vector<htm::UInt> shape);
+
+    void encode(double v, htm::SDR &out);   // out.size must equal size()
+    htm::UInt size() const { return static_cast<htm::UInt>(size_); }
+    const std::vector<htm::UInt> &dimensions() const { return shape_; }
+    double minimum() const { return min_; }
+    double maximum() const { return max_; }
+
+private:
+    std::int64_t size_ = 0, w_ = 0;
+    double min_ = 0.0, max_ = 0.0;
+    std::vector<htm::UInt> shape_;
+    std::unique_ptr<htm::ScalarEncoder> core_;   // spans bits [0, size-2w)
+    htm::SDR scratch_;                           // core-sized scratch
+    std::vector<htm::UInt> bits_;                // reusable sparse buffer
 };
 
 /* ======================================================================== */
@@ -236,7 +274,7 @@ private:
 /* FeatureEncoder: what the runtime holds per feature.                      */
 /* ======================================================================== */
 enum class FeatureKind : std::uint8_t {
-    Rdse, AdaptiveRdse, HybridRdse, DualScalar, Categorical, Date
+    Rdse, AdaptiveRdse, HybridRdse, DualScalar, Categorical, Date, Linear
 };
 
 class FeatureEncoder {
@@ -249,6 +287,7 @@ public:
     std::unique_ptr<HybridRdse> hybrid;          // HybridRdse
     std::unique_ptr<DualScalarEncoder> dual;     // DualScalar
     std::unique_ptr<DateFeature> date;           // Date
+    std::unique_ptr<ShapedLinear> linear;        // Linear
 
     bool is_datetime() const { return kind == FeatureKind::Date; }
 

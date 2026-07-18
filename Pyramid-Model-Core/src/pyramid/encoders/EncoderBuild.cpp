@@ -125,6 +125,16 @@ std::pair<AdaptiveParams, double> build_adaptive_params_from_samples(
     return {std::move(p), resolution};
 }
 
+/* numpy-default linear-interpolated quantile of a SORTED vector. */
+static double quantile_sorted(const std::vector<double> &v, double q) {
+    if (v.size() == 1) return v[0];
+    const double pos = q * static_cast<double>(v.size() - 1);
+    const std::size_t lo = static_cast<std::size_t>(pos);
+    const std::size_t hi = std::min(lo + 1, v.size() - 1);
+    const double frac = pos - static_cast<double>(lo);
+    return v[lo] * (1.0 - frac) + v[hi] * frac;
+}
+
 /* -------------- EncoderFactory.get_encoder (encoding.py) ----------------- */
 static htm::RDSE_Parameters rdse_params(std::uint64_t seed, std::int64_t size,
                                         std::int64_t activeBits,
@@ -173,6 +183,31 @@ std::unique_ptr<FeatureEncoder> build_feature_encoder(
             fe->rdse = std::make_unique<ShapedRdse>(
                 rdse_params(spec.seed, spec.size, spec.activeBits, res,
                             /*category=*/false),
+                spec.shape);
+            break;
+        }
+        case FeatureKind::Linear: {
+            double lo, hi;
+            if (spec.lin_min.has_value() && spec.lin_max.has_value()) {
+                lo = *spec.lin_min;
+                hi = *spec.lin_max;
+            } else {
+                /* Auto-calibration from the training slice: robust
+                 * percentiles (default p1/p99) -- the linear twin of the
+                 * RDSE resolution deduction. */
+                std::vector<double> vals;
+                vals.reserve(samples->size());
+                for (const double x : *samples)
+                    if (!std::isnan(x)) vals.push_back(x);
+                NTA_CHECK(!vals.empty())
+                    << "feature `" << spec.name << "`: linear auto range "
+                    << "needs at least one non-NaN training sample";
+                std::sort(vals.begin(), vals.end());
+                lo = quantile_sorted(vals, spec.lin_p_low);
+                hi = quantile_sorted(vals, spec.lin_p_high);
+            }
+            fe->linear = std::make_unique<ShapedLinear>(
+                spec.size, spec.activeBits, lo, hi, spec.resolution,
                 spec.shape);
             break;
         }

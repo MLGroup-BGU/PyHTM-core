@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include "../math/NumpyCompat.hpp"
 
@@ -40,6 +41,80 @@ void ShapedRdse::encode(double v, SDR &out) {
     /* Core checks out.size == size; NaN input yields a zero SDR -- the same
      * behavior the Python binding gives Feature.encode. */
     rdse_->encode(v, out);
+}
+
+/* ========================== ShapedLinear ================================ */
+ShapedLinear::ShapedLinear(std::int64_t size, std::int64_t activeBits,
+                           double minimum, double maximum,
+                           std::optional<double> resolution,
+                           std::vector<UInt> shape)
+    : size_(size), w_(activeBits), min_(minimum), max_(maximum),
+      shape_(std::move(shape)) {
+    NTA_CHECK(w_ > 0 && size_ > 3 * w_)
+        << "linear encoder needs size > 3*activeBits (size=" << size_
+        << ", activeBits=" << w_ << "): the range keeps size - 2*activeBits "
+        << "bits and each reserved extreme code takes activeBits.";
+    if (!(max_ > min_)) {   /* constant / degenerate calibration range */
+        const double pad =
+            (min_ == 0.0) ? 1.0 : std::abs(min_) * 1e-6 + 1e-12;
+        min_ -= pad;
+        max_ += pad;
+    }
+    const std::int64_t room = size_ - 2 * w_;
+    htm::ScalarEncoderParameters p;
+    p.minimum = min_;
+    p.maximum = max_;
+    p.activeBits = static_cast<UInt>(w_);
+    p.clipInput = true;     /* in-range only; extremes are handled here */
+    if (resolution.has_value() && *resolution > 0.0) {
+        /* Honor the researcher's granularity: buckets of exactly
+         * `resolution`, occupying only the leading bits they need. */
+        const double nBuckets = std::ceil((max_ - min_) / *resolution);
+        const std::int64_t need =
+            static_cast<std::int64_t>(nBuckets) + w_;
+        if (need <= room) {
+            p.resolution = *resolution;   /* core derives its own size  */
+        } else {
+            std::printf(
+                "[Encoders] WARN linear: resolution %.6g needs %lld bits "
+                "but only %lld fit (size %lld); falling back to the "
+                "coarsest-fit bucketing -- raise `n` (or the resolution) "
+                "to honor it\n",
+                *resolution, static_cast<long long>(need),
+                static_cast<long long>(room), static_cast<long long>(size_));
+            p.size = static_cast<UInt>(room);
+        }
+    } else {
+        p.size = static_cast<UInt>(room);  /* finest buckets that fit */
+    }
+    core_ = std::make_unique<htm::ScalarEncoder>(p);
+    NTA_CHECK(static_cast<std::int64_t>(core_->size) <= room);
+    scratch_.initialize({core_->size});
+    if (shape_.empty()) shape_ = {static_cast<UInt>(size_)};
+    bits_.reserve(static_cast<std::size_t>(w_));
+}
+
+void ShapedLinear::encode(double v, SDR &out) {
+    NTA_CHECK(out.size == static_cast<UInt>(size_))
+        << "ShapedLinear::encode: out.size " << out.size
+        << " != encoder size " << size_;
+    bits_.clear();
+    if (std::isnan(v)) {                       /* NaN -> zero SDR */
+        out.setSparse(bits_);
+        return;
+    }
+    if (v < min_) {                            /* reserved "under" code */
+        for (std::int64_t i = 0; i < w_; ++i)
+            bits_.push_back(static_cast<UInt>(size_ - 2 * w_ + i));
+    } else if (v > max_) {                     /* reserved "over" code */
+        for (std::int64_t i = 0; i < w_; ++i)
+            bits_.push_back(static_cast<UInt>(size_ - w_ + i));
+    } else {
+        core_->encode(v, scratch_);
+        const auto &sp = scratch_.getSparse();
+        bits_.assign(sp.begin(), sp.end());    /* region starts at bit 0 */
+    }
+    out.setSparse(bits_);
 }
 
 /* ========================== AdaptiveRdse ================================ */
@@ -528,6 +603,7 @@ void FeatureEncoder::encode(double v, SDR &out) {
         case FeatureKind::AdaptiveRdse: adaptive->encode(v, out); return;
         case FeatureKind::HybridRdse: hybrid->encode(v, out); return;
         case FeatureKind::DualScalar: dual->encode(v, out); return;
+        case FeatureKind::Linear: linear->encode(v, out); return;
         case FeatureKind::Date:
             NTA_THROW << "feature `" << name
                       << "` is a Datetime feature; numeric encode called";
@@ -547,6 +623,7 @@ UInt FeatureEncoder::size() const {
         case FeatureKind::AdaptiveRdse: return adaptive->size();
         case FeatureKind::HybridRdse: return hybrid->size();
         case FeatureKind::DualScalar: return dual->size();
+        case FeatureKind::Linear: return linear->size();
         case FeatureKind::Date: return date->size();
     }
     return 0;
@@ -559,6 +636,7 @@ const std::vector<UInt> &FeatureEncoder::dimensions() const {
         case FeatureKind::AdaptiveRdse: return adaptive->dimensions();
         case FeatureKind::HybridRdse: return hybrid->dimensions();
         case FeatureKind::DualScalar: return dual->dimensions();
+        case FeatureKind::Linear: return linear->dimensions();
         case FeatureKind::Date: return date->dimensions();
     }
     NTA_THROW << "unreachable";
