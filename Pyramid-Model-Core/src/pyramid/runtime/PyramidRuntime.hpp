@@ -155,9 +155,10 @@ private:
      * its ring slot t%K is free (all CONSUMERS finished t-K).  Each node
      * still processes its own records strictly in order with inputs
      * identical to the barrier path, so outputs are bit-identical.
-     * Enabled when: pipeline_depth > 1, no lateral_exchange (the only
-     * same-record intra-layer dependency), more than one worker, and no
-     * Python progress callback. */
+     * Enabled when: pipeline_depth != 1 (0 = auto, >1 = explicit K; 1 = off),
+     * no lateral_exchange (the only same-record intra-layer dependency),
+     * and more than one worker. K itself = clamp(n_workers, K_MIN, K_MAX)
+     * in the auto case -- see the K policy block in PipelineRun.cpp. */
     struct WorkerScratch {
         SdrMerger merger;
         std::vector<const htm::SDR *> inputs;

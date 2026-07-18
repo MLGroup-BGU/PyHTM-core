@@ -7,12 +7,53 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <limits>
 #include <thread>
 
 namespace pyramid {
 
 using htm::SDR;
+
+/* =========================================================================
+ * PIPELINE DEPTH POLICY  --  K = clamp( floor(n_workers * FACTOR), MIN, MAX )
+ * =========================================================================
+ * K is HOW MANY RECORDS may be in flight through the pyramid at once. It is
+ * NOT the thread count -- that is n_workers = min(L0 width, cores), resolved
+ * by the WorkerPool. K is tied to n_workers so every worker can hold roughly
+ * one in-flight record instead of parking while upper layers lag: at
+ * n_workers=1 the pipeline is off anyway; small pyramids (few workers) still
+ * get at least K_MIN depth (measured sweet spot on phase1: K=16); large
+ * pyramids get ~n_workers so all threads stay fed; K_MAX caps ring memory on
+ * pathologically wide models (K x per-record output buffers; the ring always
+ * stays a fraction of the synapse tables, but the marginal throughput past
+ * this point is negligible -- measured flat by ~K=32 on phase1).
+ *
+ * ==> EDIT THESE THREE to retune the pipeline depth for experiments. <==
+ * K_WORKER_FACTOR scales depth vs. worker count; floor() keeps K an integer
+ * for any factor (e.g. 1.5 -> floor(n_workers*1.5)). A spec pipeline_depth
+ * with an EXPLICIT value > 1 (see pyramid_spec) still forces that exact K;
+ * the env var PYRAMID_PIPE_DEPTH overrides everything.
+ */
+static constexpr double        K_WORKER_FACTOR = 1.0;  // K ~= n_workers * this
+static constexpr std::int64_t  K_MIN           = 16;   // floor: phase1 optimum
+static constexpr std::int64_t  K_MAX           = 64;   // cap:   ring-memory guard
+
+/* K for the AUTO case: floor(n_workers * factor), then clamped to [MIN, MAX]. */
+static inline std::int64_t auto_pipeline_depth(std::int64_t n_workers) {
+    std::int64_t k = static_cast<std::int64_t>(
+        std::floor(static_cast<double>(n_workers) * K_WORKER_FACTOR));
+    if (k < K_MIN) return K_MIN;
+    if (k > K_MAX) return K_MAX;
+    return k;
+}
+
+/* Clamp an EXPLICIT override (spec pipeline_depth > 1) to the same bounds. */
+static inline std::int64_t clamp_pipeline_depth(std::int64_t k) {
+    if (k < K_MIN) return K_MIN;
+    if (k > K_MAX) return K_MAX;
+    return k;
+}
 
 // A single "pause" hint for spin-wait loops: lets the CPU de-prioritize the
 // spinning hardware thread (freeing pipeline/issue slots for its hyperthread
@@ -58,36 +99,33 @@ void PyramidRuntime::ws_merge_or_copy(WorkerScratch &ws, MergeMode mode,
 }
 
 void PyramidRuntime::allocate_pipeline() {
-    pipeK_ = spec_.pipeline_depth;
-    /* Default in-flight depth: 4x the layer count, clamped to [8, 64].
-     * Measured on a 10C/20T host (EEG: 19 nodes / 4 layers, 10 workers):
-     *   K=4 -> 230 rec/s, K=8 -> 270, K=16 -> ~305, K=32 -> ~320.
-     * With only one slot per layer (the old K = layer count) every record's
-     * cross-thread hand-offs leaked park latency straight into throughput --
-     * workers sat parked at 30-60% total CPU. A deeper window keeps a worker
-     * that owns nodes in far-apart layers busy on other in-flight records
-     * instead. 4x depth captures ~95% of the measured gain while the ring
-     * ("in-flight record buffers") stays MB-scale and comfortably inside L3.
-     * spec depth == 1 still means "pipeline disabled" and is left untouched.
-     */
-    if (pipeK_ > 1) {
-        pipeK_ *= 4;
-        if (pipeK_ < 4)  pipeK_ = 4;
-        if (pipeK_ > 64) pipeK_ = 64;
+    /* Resolve K (records in flight). Three cases, in priority order:
+     *   spec.pipeline_depth <= 1        -> pipeline OFF (untouched below).
+     *   spec.pipeline_depth == 0 (AUTO) -> K = clamp(n_workers, K_MIN, K_MAX)
+     *   spec.pipeline_depth >  1        -> EXPLICIT override, used verbatim
+     *                                      (still clamped to [K_MIN, K_MAX]).
+     * pyramid_spec sends 0 as the default ("auto"); a runner may pass an
+     * explicit >1 to pin K. The K policy itself (K_MIN/K_MAX/clampK) lives
+     * in one place at the top of this file. n_workers is known here because
+     * the WorkerPool is already built. */
+    const std::int64_t nW =
+        pool_ ? static_cast<std::int64_t>(pool_->n_workers()) : 1;
+    if (spec_.pipeline_depth <= 1 && spec_.pipeline_depth != 0) {
+        pipeK_ = spec_.pipeline_depth;        // <=1 and not the auto sentinel: OFF
+    } else if (spec_.pipeline_depth == 0) {
+        pipeK_ = auto_pipeline_depth(nW);     // AUTO: tie depth to worker count
+    } else {
+        pipeK_ = clamp_pipeline_depth(spec_.pipeline_depth); // EXPLICIT override
     }
-    /* PYRAMID_PIPE_DEPTH -- optional EXPERIMENT KNOB (environment variable).
-     * Overrides the pipeline depth K = how many records may be in flight in
-     * the pyramid at once. A deeper K gives every worker more ready work
-     * between cross-thread hand-offs (less parked idle time when upper
-     * layers lag), at the cost of K x output-buffer memory (MB scale --
-     * shown as "in-flight record buffers" in the banner). Results are
-     * bit-exact for ANY K >= 2: each node still steps its records strictly
-     * in order and dependency gates are K-independent (verified by the
-     * bit-exact matrix at K=2/4/8). Clamped to [2, 64]. Unset -> default. */
+    /* PYRAMID_PIPE_DEPTH -- optional EXPERIMENT KNOB (environment variable),
+     * overrides everything above. K = records in flight. Bit-exact for ANY
+     * K >= 2 (each node still steps its records strictly in order; dependency
+     * gates are K-independent -- verified by the bit-exact matrix at
+     * K=2/4/8). Accepted range [2, K_MAX]. */
     if (const char *e = std::getenv("PYRAMID_PIPE_DEPTH")) {
         char *end = nullptr;
         const long v = std::strtol(e, &end, 10);
-        if (end != e && v >= 2 && v <= 64)
+        if (end != e && v >= 2 && v <= K_MAX)
             pipeK_ = static_cast<std::int64_t>(v);
     }
     pipelineOn_ = pipeK_ > 1 && !spec_.flags.lateral_exchange &&

@@ -133,7 +133,8 @@ struct PyramidSpec {
     DataSpec data;
     std::optional<std::int64_t> max_workers;
     bool multiprocess = true;             // false -> single-thread run path
-    std::int64_t pipeline_depth = 4;      // records in flight (<=1 -> off)
+    std::int64_t pipeline_depth = 0;      // 0 = auto (K=clamp(n_workers));
+                                          // 1 = off; >1 = explicit K override
     bool progress = true;
 };
 

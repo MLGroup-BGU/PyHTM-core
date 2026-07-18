@@ -294,7 +294,8 @@ PyramidSpec parse_spec(const py::dict &d) {
 
     s.max_workers = get_opt<std::int64_t>(d, "max_workers");
     s.multiprocess = get_or<bool>(d, "multiprocess", true);
-    s.pipeline_depth = get_or<std::int64_t>(d, "pipeline_depth", 4);
+    // 0 = auto (engine sets K = clamp(n_workers)); 1 = off; >1 = explicit K.
+    s.pipeline_depth = get_or<std::int64_t>(d, "pipeline_depth", 0);
     s.progress = get_or<bool>(d, "progress", true);
     return s;
 }
