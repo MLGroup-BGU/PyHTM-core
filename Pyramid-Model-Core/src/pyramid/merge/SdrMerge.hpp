@@ -17,7 +17,6 @@
  *   `np.random.default_rng(seed)`, constructed FRESH PER CALL just as the
  *   Python code does.  Given the same seed and inputs, the selected bit set
  *   is the same set NumPy selects.  Verified per mode against the actual
- *   Python sdr.py by verification/pyramid/test_merge_equiv.py.
  *
  * PERFORMANCE / MEMORY
  *   One SdrMerger instance owns all scratch buffers and is reused across

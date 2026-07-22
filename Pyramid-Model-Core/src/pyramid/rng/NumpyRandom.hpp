@@ -22,9 +22,7 @@
  * FAITHFULNESS
  *   Every algorithm below is a line-for-line port of the corresponding NumPy
  *   source (numpy/random/_bit_generator.pyx, pcg64.c/.h, _generator.pyx as of
- *   NumPy 2.x; the algorithms are unchanged since NumPy 1.17).  The port is
- *   verified value-for-value against the installed NumPy by
- *   verification/pyramid/test_numpy_rng.py.
+ *   NumPy 2.x; the algorithms are unchanged since NumPy 1.17).
  *
  * THREAD-SAFETY
  *   Objects here are cheap value types with no global state; each merge call

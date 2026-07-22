@@ -68,10 +68,6 @@ runtime: contract, GIL model, threading, flags),
 **[`Single-HTM-Core/bindings/py/cpp_src/`](Single-HTM-Core/bindings/py/cpp_src/README.md)** (modules + GIL strategy), and
 **[`Single-HTM-Core/py/htm/`](Single-HTM-Core/py/htm/README.md)** (import surface).
 
-The bit-exactness test harness is shipped **alongside** this repository (in
-a sibling `verification/` folder), not inside it, so a clone carries only
-what is needed to build and run the engines. It has no build coupling to
-either engine.
 
 ---
 

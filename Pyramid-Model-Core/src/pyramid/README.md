@@ -1,7 +1,6 @@
 # 🧠 src/pyramid — the C++ pyramid runtime
 
-One folder per concern; every component is validated bit-exact against its
-Python/numpy counterpart by the suites in `verification/pyramid`.
+One folder per concern
 
 | Folder | What lives here | Verified by |
 |--------|-----------------|-------------|

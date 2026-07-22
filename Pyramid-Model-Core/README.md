@@ -13,10 +13,7 @@ GIL release on a pinned worker pool.
 | **Python** (`htm_source.pipeline.pyramid_spec`) | Resolves every configuration-derived value (per-layer configs, timescale overrides, `potentialRadius` rounding, seeds, dims chaining, per-node summary strings) and hands the engine a fully-resolved spec dict. |
 | **C++** (this module) | Computes every data-derived value (deduced RDSE resolutions, adaptive quantile tables, dual-scalar fits), builds all nodes in parallel, and streams the dataset through the pyramid. |
 
-Result equivalence with the PyHTM Python implementation
-(`htm_source.model.htm_pyramid_python`) is exact — anomaly and activity
-arrays compare element-for-element across the flag × encoder matrix; see
-[`verification/pyramid/`](../verification/pyramid/README.md).
+
 
 ## 📁 Layout
 

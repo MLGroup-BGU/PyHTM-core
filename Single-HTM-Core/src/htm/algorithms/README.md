@@ -27,6 +27,4 @@
 - **TemporalMemory** — `getPredictiveCells()` deduplicates the (already
   cell-sorted) active-segment list linearly instead of via a `std::set`.
 
-> ℹ️ **Every change above is behaviour-preserving** — verified bit-exact
-> against the pre-change build by [`verification/ab_test.py`](../../../verification/README.md),
-> including RNG order and float-op order.
+

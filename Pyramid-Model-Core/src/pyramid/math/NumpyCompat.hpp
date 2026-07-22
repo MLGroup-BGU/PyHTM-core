@@ -26,7 +26,6 @@
  *   designed to preserve this exact ordering).
  *   quantile machinery: numpy/lib/_function_base_impl.py (_compute_virtual_
  *   index, _get_indexes, _get_gamma, _lerp).
- *   All verified value-for-value by verification/pyramid/test_numpy_math.py.
  *
  * THREAD-SAFETY: pure functions; no state.
  * ------------------------------------------------------------------------ */
