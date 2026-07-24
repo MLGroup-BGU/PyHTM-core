@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <functional>
 
@@ -115,10 +116,39 @@ enum class Stage {
     Done            // bright green -- completion summary
 };
 
+/* Is stdout a terminal?
+ *
+ * The progress line is redrawn in place with a carriage return, which only
+ * makes sense on a terminal. Sent to a file -- an sbatch output log, a pipe,
+ * a redirect -- those carriage returns pile up into one enormous logical line
+ * that no reader displays sensibly. Callers use this to choose between
+ * redrawing and appending. */
+inline bool stdout_is_terminal() {
+    static const bool tty = HTM_ISATTY(HTM_FILENO(stdout)) != 0;
+    return tty;
+}
+
+/* Percent step between progress lines when stdout is NOT a terminal.
+ *
+ * A file wants a readable trail, not an animation: at the default of 1 a run
+ * leaves about a hundred lines whatever its length. Override with
+ * PYRAMID_PROGRESS_PCT, an integer from 1 to 100. Out-of-range or unparsable
+ * values fall back to the default rather than failing the run. */
+inline int progress_percent_step() {
+    static const int step = [] {
+        if (const char *env = std::getenv("PYRAMID_PROGRESS_PCT")) {
+            const int v = std::atoi(env);
+            if (v >= 1 && v <= 100) return v;
+        }
+        return 1;
+    }();
+    return step;
+}
+
 namespace detail {
 inline bool ansi_ok() {
     static const bool ok = [] {
-        if (!HTM_ISATTY(HTM_FILENO(stdout))) return false;
+        if (!stdout_is_terminal()) return false;
 #if defined(_WIN32)
         HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD mode = 0;

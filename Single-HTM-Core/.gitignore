@@ -1,0 +1,60 @@
+# Single-HTM-Core -- ignores for a standalone checkout of this subtree.
+#
+# This directory builds on its own (`python htm_install.py`), so it carries
+# its own ignore list rather than relying on a parent repository's.
+
+# --- Build output -----------------------------------------------------
+build/
+build-*/
+cmake-build-*/
+out/
+_deps/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+
+# --- Generated at configure/build time --------------------------------
+# Written by the build from the project version; not a source file.
+VERSION
+Version.hpp
+*.pc
+
+# --- Compiled artifacts -----------------------------------------------
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# --- Python -----------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+.venv/
+venv/
+
+# --- runner_example.py output -----------------------------------------
+runner_example_scores.csv
+
+# --- Editor / OS noise ------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

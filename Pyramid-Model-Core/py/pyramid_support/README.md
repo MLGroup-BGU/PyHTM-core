@@ -25,6 +25,6 @@ single-pass by design.
 
 GIL cost: one acquisition per `batch_rows` (default 8192) records for a
 few buffer copies — well under 0.1% of a run. Parquet ingestion lives in
-this reader (pyarrow), keeping the C++ build free of an Arrow dependency;
+this reader (pyarrow), keeping the C++ build free of an Arrow dependency.
 the engine's `RecordSource` interface also accepts native sources
 (`CsvSource` today).

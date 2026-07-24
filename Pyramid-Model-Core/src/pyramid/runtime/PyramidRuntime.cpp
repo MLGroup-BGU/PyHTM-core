@@ -547,6 +547,11 @@ void PyramidRuntime::run(
                               "RUN -- streaming records through the pyramid");
     const auto runStart = std::chrono::steady_clock::now();
     auto lastProgress = runStart;
+    /* Terminal -> redraw one line in place. File or pipe -> append a line per
+     * step of percent, so an sbatch log stays readable. */
+    const bool tty = htm_pyramid::stdout_is_terminal();
+    const int pctStep = htm_pyramid::progress_percent_step();
+    int lastPct = -1;
     htm_pyramid::RateWindow rateWin;   // current-speed window (~6 s)
     const std::int64_t runFrom = currentIter_;
 
@@ -610,7 +615,18 @@ void PyramidRuntime::run(
             progress_every > 0 &&
             std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                           lastProgress).count() >= htm_pyramid::PROGRESS_REFRESH_SECONDS;
-        if (count_hit || time_hit) {
+        /* Redrawing in place only reads correctly on a terminal. Sent to a
+         * file -- an sbatch log, a pipe -- carriage returns collapse into one
+         * unreadable line, so there we append one line per step of percent
+         * instead. */
+        bool emit = count_hit || time_hit;
+        if (emit && !tty && total > 0) {
+            const int pct = static_cast<int>(
+                100.0 * static_cast<double>(currentIter_) / total);
+            emit = pct / pctStep > lastPct / pctStep;
+            if (emit) lastPct = pct;
+        }
+        if (emit) {
             lastProgress = std::chrono::steady_clock::now();
             htm_pyramid::check_interrupt();   // Ctrl+C responsiveness
             if (progress) {
@@ -633,26 +649,30 @@ void PyramidRuntime::run(
                         total > 0 ? static_cast<double>(currentIter_) / total
                                   : 0.0;
                     htm_pyramid::progress_bar(frac, bar, 24);
-                    std::printf("\r[Run] %s %5.1f%%  %lld/%lld records  "
+                    std::printf("%s[Run] %s %5.1f%%  %lld/%lld records  "
                                 "%.1f record/second  elapsed %s  "
-                                "estimated time remaining %s        ",
+                                "estimated time remaining %s        %s",
+                                tty ? "\r" : "",
                                 bar, 100.0 * frac,
                                 static_cast<long long>(currentIter_),
                                 static_cast<long long>(total), rate,
                                 htm_pyramid::fmt_hms(el).c_str(),
-                                htm_pyramid::fmt_hms(eta).c_str());
+                                htm_pyramid::fmt_hms(eta).c_str(),
+                                tty ? "" : "\n");
                 } else {
-                    std::printf("\r[Run] %lld records  %.1f record/second  "
-                                "elapsed %s        ",
+                    std::printf("%s[Run] %lld records  %.1f record/second  "
+                                "elapsed %s        %s",
+                                tty ? "\r" : "",
                                 static_cast<long long>(currentIter_), rate,
-                                htm_pyramid::fmt_hms(el).c_str());
+                                htm_pyramid::fmt_hms(el).c_str(),
+                                tty ? "" : "\n");
                 }
                 std::fflush(stdout);
             }
         }
     }
     if (progress) progress(currentIter_, total);
-    else std::printf("\n");   // finish the in-place progress line
+    else if (tty) std::printf("\n");   // close the in-place progress line
 
     const double secs = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - runStart).count();

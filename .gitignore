@@ -40,6 +40,9 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 
+# --- Generated at build time ------------------------------------------
+VERSION
+
 # --- Local helper files (yours, not part of the source) ---------------
 structure.txt
 *.log

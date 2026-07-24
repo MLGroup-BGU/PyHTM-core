@@ -8,7 +8,7 @@
 |---|---|
 | [`htm/`](htm/README.md) | The package root — see its [README](htm/README.md) for the layout. |
 
-> ℹ️ Everything computational is C++; the Python files here are import
+> ℹ️ Everything computational is C++. The Python files here are import
 > surface and one pure-Python encoder. Upstream's `advanced/` (research
 > code) and `optimization/` (swarming) trees were removed — PyHTM never
 > imported them, and they were the only consumers of the `hexy` /

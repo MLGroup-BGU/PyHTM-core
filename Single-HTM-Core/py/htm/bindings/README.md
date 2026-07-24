@@ -6,5 +6,5 @@
 
 | File | Role |
 |---|---|
-| `__init__.py` | Package marker (Python 3 imports the `.so` files directly; the old Python-2 loader shim was removed). |
+| `__init__.py` | Package marker (Python 3 imports the `.so` files directly. The old Python-2 loader shim was removed). |
 | `check.py` | Post-install sanity check — imports each extension module and runs a tiny SP loop. Handy after building on a new machine: `python -c "from htm.bindings.check import checkMain; checkMain()"`. |

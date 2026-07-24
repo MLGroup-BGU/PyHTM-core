@@ -28,7 +28,8 @@ Single-HTM-Core/
 ├── CMakeLists.txt          # standalone build entry (this directory as root)
 ├── CommonCompilerConfig.cmake
 ├── DetectMarch.cmake       # CPUID/XGETBV SIMD-level probe
-└── htm_install.py          # standalone build/install script
+├── htm_install.py          # standalone build/install script
+└── runner_example.py       # worked example: one HTM over a CSV
 ```
 
 The subtree is **self-contained**: it carries its own
@@ -61,19 +62,38 @@ Set `-DBINDING_BUILD=Python3` to also build the pybind11 extension modules.
 
 ### Requirements
 
-* CMake ≥ 3.21 and a C++17 compiler (MSVC on Windows; gcc/clang on
-  Linux/macOS). The Python bindings additionally need CPython ≥ 3.9 and
-  pybind11.
+* CMake ≥ 3.21 and a C++17 compiler (MSVC on Windows. Gcc/clang on
+  Linux/macOS).
+* For the Python bindings: CPython ≥ 3.9 and pybind11 in the environment
+  being built against (`pip install pybind11`). CMake locates it by asking
+  that interpreter for its pybind11 CMake directory, so no
+  `-Dpybind11_DIR=...` is required. Passing one takes precedence.
+* On Linux the build sets `PYTHON_TARFILE_EXTRACTION_FILTER=fully_trusted`
+  for its own process, so that source archives containing absolute or
+  escaping tar links extract under Python 3.12 and 3.9.17+ / 3.11.4+. An
+  explicit value already present in the environment is left as it is.
 
 ### SIMD level
 
 `HTM_MARCH=auto` (the default) probes the build host with CPUID + XGETBV and
-selects `x86-64-v2/v3/v4`. The library is capped at `x86-64-v3` because v4
-codegen measurably perturbs its floating-point results; the integer
-histogram hot loop in `Connections::computeActivity` opts into an AVX-512
-(`vpconflictd` + gather/scatter) kernel per-file on v4 hosts. Floating-point
-contraction is pinned off under march levels so results are identical across
-levels.
+selects `x86-64-v2/v3/v4`.
+
+The htm_core library is always built at `x86-64-v3`, whichever level the
+probe finds. Level 4 changes its floating-point results by roughly one unit
+in the last place, which is enough to move a value across an encoder bucket
+boundary and send two machines down different learning paths from the same
+input. It is also slower here: the AVX-512 downclock costs more than the
+wider vectors return, because the hot paths are sparse memory access rather
+than dense float arithmetic.
+
+The one loop that does benefit is the integer histogram in
+`Connections::computeActivity`, and it opts into an AVX-512 kernel per file
+from the detected level rather than the capped one. That work is exact
+integer arithmetic, so it is order independent. Level 4 hosts get it, level 2
+and 3 hosts never see an AVX-512 instruction.
+
+Floating-point contraction is pinned off under march levels, so results are
+identical across levels.
 
 ---
 
@@ -102,11 +122,34 @@ tm  = TemporalMemory(...)       # columns -> predictive cells, anomaly
 
 ---
 
+## Trying it out
+
+`runner_example.py` runs one HTM over a CSV, a row at a time: encoder →
+Spatial Pooler → Temporal Memory → anomaly score.
+
+```bash
+python htm_install.py --bindings     # build the modules
+# edit the EDIT THIS block at the top of runner_example.py, then:
+python runner_example.py
+```
+
+Everything meant to be changed is in that block: the CSV path, which columns to
+feed the model, and the encoder / SP / TM parameters. The script imports the
+installed `htm` package if there is one and otherwise picks the modules
+straight out of `build/`, so it runs immediately after a build with nothing
+installed.
+
+It is a *single* HTM. Several columns are encoded and concatenated into one
+input SDR, not given models of their own. Multi-model hierarchies are not part
+of this subtree.
+
+---
+
 ## License & attribution
 
 Single-HTM-Core derives from
 [htm.core](https://github.com/htm-community/htm.core) (HTM Community Edition
-of NuPIC; © 2013–2024 Numenta, Inc. and the htm.core community) and is
+of NuPIC. © 2013–2024 Numenta, Inc. and the htm.core community) and is
 licensed under the **GNU Affero General Public License v3 (AGPLv3)**.
 Original copyright notices and source-file headers are preserved. As required
 by the AGPL, derivative works remain under AGPLv3.

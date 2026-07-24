@@ -371,7 +371,6 @@ else()
         message(STATUS "${_b}================ PyHTM-core ${_htm_ver} -- build configuration ================${_r}")
         message(STATUS "${_b}  OS / arch    : ${CMAKE_SYSTEM_NAME} / ${CMAKE_SYSTEM_PROCESSOR}${_r}")
         message(STATUS "${_b}  Compiler     : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}${_r}")
-        message(STATUS "${_b}  HTM_TYPE     : ${HTM_TYPE}${_r}")
         message(STATUS "${_b}  HTM_MARCH    : ${HTM_MARCH} -> ${HTM_MARCH_RESOLVED} ${HTM_MARCH_FLAGS}${_r}")
         message(STATUS "${_b}  HTM_LTO      : ${HTM_LTO} (pyramid-scope: ${HTM_LTO_PYRAMID})${_r}")
         message(STATUS "${_b}==============================================================================${_r}")
@@ -421,7 +420,7 @@ else()
 	# Settings for internal htm.core code
 	set(INTERNAL_CXX_FLAGS ${debug_specific_compile_flags} ${cxx_flags_unoptimized} ${internal_compiler_warning_flags} ${optimization_flags_cc})
 	set(INTERNAL_LINKER_FLAGS ${debug_specific_linker_flags} ${linker_flags_unoptimized} ${optimization_flags_lt})
-	
+
 	#
 	# Common system libraries for shared libraries and executables
 	#
@@ -449,5 +448,3 @@ string (REPLACE ";" " " INTERNAL_CXX_FLAGS_STR "${INTERNAL_CXX_FLAGS}")
 # Provide a string variant of the INTERNAL_LINKER_FLAGS list
 string (REPLACE ";" " " INTERNAL_LINKER_FLAGS_STR "${INTERNAL_LINKER_FLAGS}")
 set_property(GLOBAL PROPERTY LINK_LIBRARIES ${INTERNAL_LINKER_FLAGS})
-
-

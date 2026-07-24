@@ -19,7 +19,13 @@
 cmake_minimum_required(VERSION 3.21)
 project(htm_core CXX C)
 
-option(BINDING_BUILD "Python3 to build pybind11 modules, CPP_Only for the C++ library only" "CPP_Only")
+# BINDING_BUILD is a STRING, not a boolean: option() would coerce it to
+# ON/OFF and the "CPP_Only" default would never be seen, which silently
+# changes what DetectMarch does (the library cap only applies to a CPP_Only
+# build) and leaves the value unusable in a STREQUAL comparison.
+set(BINDING_BUILD "CPP_Only" CACHE STRING
+    "Python3 to build pybind11 modules, CPP_Only for the C++ library only")
+set_property(CACHE BINDING_BUILD PROPERTY STRINGS CPP_Only Python3)
 
 # This directory is both the module path (for CommonCompilerConfig /
 # DetectMarch / external modules) and the source root the sub-CMakeLists
@@ -70,9 +76,24 @@ list(APPEND EXTERNAL_INCLUDES "${common_INCLUDE_DIR}")
 add_subdirectory(src)
 
 # Optionally also build the pybind11 modules against the just-built library.
+#
+# The library and its headers are taken from where THIS build actually puts
+# them, not from an install prefix. A parent project may stage an install
+# first and point these at it; on their own, `cmake -S . -B build
+# -DBINDING_BUILD=Python3 && cmake --build build` has to work in one shot,
+# with no install step, which is what the paths below give.
 if(BINDING_BUILD STREQUAL "Python3")
-  set(HTM_CORE_LIB_DIR "${CMAKE_BINARY_DIR}/Release/lib"
+  set(HTM_CORE_LIB_DIR "${CMAKE_BINARY_DIR}/src"
       CACHE PATH "Path to the built htm_core library")
+
+  # Headers of the library itself, the generated ones (Version.hpp), and the
+  # external ones cereal.cmake / common.cmake resolved above.
+  list(APPEND CORE_LIB_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  list(APPEND CORE_LIB_INCLUDES "${CMAKE_BINARY_DIR}/src")
+  list(APPEND CORE_LIB_INCLUDES ${EXTERNAL_INCLUDES})
+
+  # An install prefix, if one was staged, still takes part.
   list(APPEND CORE_LIB_INCLUDES "${CMAKE_BINARY_DIR}/Release/include")
+
   add_subdirectory(bindings/py/cpp_src)
 endif()

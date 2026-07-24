@@ -72,20 +72,96 @@ def purge_interrupted_build_leftovers():
               f"the build will regenerate them.")
 
 
-def preflight():
+def _ensure_cmake():
+    """Make cmake available, installing it into the active environment if not.
+
+    CMake ships as a pip wheel, so a Python environment can supply it without
+    a system package or an administrator. That keeps this subtree buildable
+    from a bare conda environment, which is how it is usually met. A cmake
+    already on PATH is left alone -- a system or module-provided one is
+    preferred over anything installed here.
+    """
+    if _have("cmake"):
+        return
+    print("   cmake    : not on PATH -- installing the pip wheel")
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "cmake>=3.21"],
+                       check=True)
+    except subprocess.CalledProcessError:
+        sys.exit("ERROR: cmake is not on PATH and could not be installed.\n"
+                 "       Install it yourself, then run this again:\n"
+                 f"           {sys.executable} -m pip install cmake\n"
+                 "       or load a system module that provides it.")
+    if not _have("cmake"):
+        sys.exit("ERROR: cmake was installed but is still not on PATH.\n"
+                 "       The environment's scripts directory is probably not "
+                 "in PATH.\n"
+                 "       Reactivate the environment and run this again.")
+
+
+def _ensure_pybind11():
+    """Make pybind11 importable when the Python modules are being built.
+
+    CMake locates pybind11 by asking this interpreter for its CMake package
+    directory, so the wheel has to be present in the environment being built
+    against. Installing it here means a bare environment can build the modules
+    without a separate preparation step, matching how cmake is handled above.
+    """
+    try:
+        import pybind11  # noqa: F401
+        return
+    except ImportError:
+        pass
+    print("   pybind11 : not installed -- installing the wheel")
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install",
+                        "pybind11>=2.13.6"], check=True)
+    except subprocess.CalledProcessError:
+        sys.exit("ERROR: pybind11 is required for --bindings and could not be "
+                 "installed.\n"
+                 "       Install it yourself, then run this again:\n"
+                 f"           {sys.executable} -m pip install pybind11\n"
+                 "       Or build the C++ library only, without --bindings.")
+
+
+def preflight(bindings=False):
     print("== Single-HTM-Core build: pre-flight checks ==")
     print(f"   python   : {sys.version.split()[0]} ({sys.executable})")
     print(f"   platform : {sys.platform}")
-    if not _have("cmake"):
-        sys.exit("ERROR: cmake not found on PATH. Install CMake >= 3.21 "
-                 "(e.g. `pip install cmake`).")
+    _ensure_cmake()
+    if bindings:
+        _ensure_pybind11()
     # a compiler check: MSVC is located by CMake itself on Windows; on
     # POSIX we can sanity-check for a C++ compiler up front.
     if sys.platform != "win32" and not (_have("c++") or _have("g++")
                                         or _have("clang++")):
         sys.exit("ERROR: no C++ compiler found (g++/clang++). Install a "
-                 "C++17 toolchain.")
+                 "C++17 toolchain.\n"
+                 "       On a cluster this usually means you are on a login "
+                 "node -- request\n"
+                 "       a compute node and try again.")
     print("   toolchain: OK")
+
+
+def _relax_tarfile_filter():
+    """Let the build extract archives that the hardened tarfile rejects.
+
+    Python 3.12 (and 3.9.17+ / 3.11.4+ via PEP 706) refuse tar members with
+    absolute links or links that point outside the destination. Some source
+    archives pulled in during a build contain exactly that, and the failure
+    surfaces far from its cause -- as an AbsoluteLinkError or a
+    LinkOutsideDestinationError deep inside pip or a build backend.
+
+    PYTHON_TARFILE_EXTRACTION_FILTER restores the pre-hardening behaviour for
+    this process and everything it spawns, without touching the interpreter's
+    own tarfile.py. It is only needed on Linux, where those archives are used,
+    and an explicit setting already in the environment is left alone.
+    """
+    if sys.platform.startswith("linux") and \
+            "PYTHON_TARFILE_EXTRACTION_FILTER" not in os.environ:
+        os.environ["PYTHON_TARFILE_EXTRACTION_FILTER"] = "fully_trusted"
+        print(">> PYTHON_TARFILE_EXTRACTION_FILTER=fully_trusted "
+              "(Linux archive extraction)", flush=True)
 
 
 def configure(args):
@@ -119,11 +195,13 @@ def main():
                     help="remove the build directory first")
     args = ap.parse_args()
 
+    _relax_tarfile_filter()
+
     if args.clean:
         shutil.rmtree(BUILD_DIR, ignore_errors=True)
 
     purge_interrupted_build_leftovers()
-    preflight()
+    preflight(bindings=args.bindings)
     configure(args)
     build(args)
 

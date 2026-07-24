@@ -199,10 +199,17 @@ macro(htm_detect_march)
     endif()
     if(HTM_MARCH_DETECTED GREATER 1)
       set(_htm_level ${HTM_MARCH_DETECTED})
-      if(DEFINED BINDING_BUILD AND BINDING_BUILD STREQUAL "CPP_Only"
-         AND _htm_level GREATER _htm_lib_cap)
+      # This subtree always builds the htm_core library, whether or not the
+      # Python modules are built alongside it, so the cap always applies.
+      # Measured on this workload, x86-64-v4 is also SLOWER than v3: the
+      # AVX-512 downclock costs more than the wider vectors return, since the
+      # hot paths are sparse memory access rather than dense float math. The
+      # one loop that does benefit, the integer histogram in
+      # Connections::computeActivity, opts into AVX-512 per file from the
+      # detected level, so nothing is given up by holding the rest at v3.
+      if(_htm_level GREATER _htm_lib_cap)
         message(STATUS "HTM_MARCH: library capped at x86-64-v${_htm_lib_cap} "
-                       "(detected v${_htm_level}; numeric invariance -- "
+                       "(detected v${_htm_level}. numeric invariance -- "
                        "integer AVX-512 kernels opt in per-file)")
         set(_htm_level ${_htm_lib_cap})
       endif()

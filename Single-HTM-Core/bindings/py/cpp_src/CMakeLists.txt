@@ -40,7 +40,47 @@ message(STATUS "CORE_LIB_INCLUDES: ${CORE_LIB_INCLUDES}")
 
 # Find Python
 find_package(Python COMPONENTS Interpreter Development REQUIRED)
-find_package(pybind11 CONFIG REQUIRED)
+
+# pybind11.
+#
+# Try the normal lookup first: a parent project, a caller passing
+# -Dpybind11_DIR=..., or a build backend such as scikit-build-core will all
+# have set things up already, and that path must keep working untouched.
+#
+# If nothing has, ask the Python interpreter we just found where its own
+# pybind11 CMake package lives. pybind11 ships that path via
+# pybind11.get_cmake_dir(), so a plain `pip install pybind11` in the active
+# environment is enough and this subtree needs no parent project and no
+# caller-supplied flag to configure on its own.
+find_package(pybind11 CONFIG QUIET)
+
+if(NOT pybind11_FOUND)
+    execute_process(
+        COMMAND "${Python_EXECUTABLE}" -c
+                "import pybind11, sys; sys.stdout.write(pybind11.get_cmake_dir())"
+        OUTPUT_VARIABLE _htm_pybind11_dir
+        RESULT_VARIABLE _htm_pybind11_rc
+        ERROR_VARIABLE  _htm_pybind11_err
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+    if(_htm_pybind11_rc EQUAL 0 AND IS_DIRECTORY "${_htm_pybind11_dir}")
+        message(STATUS "pybind11 located via ${Python_EXECUTABLE}: ${_htm_pybind11_dir}")
+        set(pybind11_DIR "${_htm_pybind11_dir}" CACHE PATH
+            "pybind11 CMake package directory" FORCE)
+        find_package(pybind11 CONFIG REQUIRED)
+    else()
+        message(FATAL_ERROR
+            "pybind11 not found, and ${Python_EXECUTABLE} cannot import it.\n"
+            "  The Python bindings need pybind11 in the environment that is "
+            "being built against.\n"
+            "  Install it there:\n"
+            "      ${Python_EXECUTABLE} -m pip install pybind11\n"
+            "  or point CMake at an existing copy:\n"
+            "      -Dpybind11_DIR=<path to share/cmake/pybind11>\n"
+            "  To build the C++ library only, configure with "
+            "-DBINDING_BUILD=CPP_Only.")
+    endif()
+endif()
 
 set(htm_core_lib_path  "${HTM_CORE_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}htm_core${CMAKE_STATIC_LIBRARY_SUFFIX}")
 message(STATUS "htm_core_lib_path = ${htm_core_lib_path}")
@@ -77,23 +117,23 @@ source_group("encoders"   FILES ${src_py_encoders_files})
 #
 ############################################################
 #
-# Note: if you need a debuggable version of the Python interface 
+# Note: if you need a debuggable version of the Python interface
 #       See: https://bugs.python.org/issue22411
 #       and: https://github.com/pybind/pybind11/issues/1295
-#          
+#
 
 # It is ready to use pybind11_add_module() macro.
 # For details: https://pybind11.readthedocs.io/en/stable/compiling.html#cmake
 
 set(algorithms_shared_lib algorithms)
 pybind11_add_module(${algorithms_shared_lib} ${src_py_algorithms_files} )
-target_link_libraries(${algorithms_shared_lib} PRIVATE 
+target_link_libraries(${algorithms_shared_lib} PRIVATE
         ${htm_core_lib_path}
         ${COMMON_OS_LIBS}
         )
 target_compile_options(${algorithms_shared_lib} PUBLIC ${INTERNAL_CXX_FLAGS})
 target_compile_definitions(${algorithms_shared_lib} PRIVATE ${COMMON_COMPILER_DEFINITIONS})
-target_include_directories(${algorithms_shared_lib} PRIVATE 
+target_include_directories(${algorithms_shared_lib} PRIVATE
         ${CORE_LIB_INCLUDES}
         ${CMAKE_CURRENT_SOURCE_DIR}
 	    SYSTEM ${PYTHON_INCLUDE_DIRS}
@@ -119,19 +159,32 @@ target_include_directories(${sdr_shared_lib} PRIVATE
 
 set(encoders_shared_lib encoders)
 pybind11_add_module(${encoders_shared_lib} ${src_py_encoders_files} )
-target_link_libraries(${encoders_shared_lib} PRIVATE 
+target_link_libraries(${encoders_shared_lib} PRIVATE
         ${htm_core_lib_path}
         ${COMMON_OS_LIBS}
         )
 target_compile_options(${encoders_shared_lib} PUBLIC ${INTERNAL_CXX_FLAGS})
 target_compile_definitions(${encoders_shared_lib} PRIVATE ${COMMON_COMPILER_DEFINITIONS})
-target_include_directories(${encoders_shared_lib} PRIVATE 
+target_include_directories(${encoders_shared_lib} PRIVATE
         ${CORE_LIB_INCLUDES}
         ${CMAKE_CURRENT_SOURCE_DIR}
         SYSTEM ${PYTHON_INCLUDE_DIRS}
         SYSTEM ${pybind11_INCLUDE_DIRS}
         SYSTEM ${EXTERNAL_INCLUDES}
 	)
+
+# The modules link the library by FILE PATH, not by target name, because a
+# parent project may hand us a library staged by an earlier build stage whose
+# target does not exist in this configure. A path carries no dependency edge,
+# so when the library IS built in this same configure the generator has no
+# reason to build it first -- and a parallel build races, failing with
+# "No rule to make target 'src/libhtm_core.a'". Declaring the order here fixes
+# that, and is skipped when the target is absent.
+if(TARGET htm_core)
+    add_dependencies(${sdr_shared_lib}        htm_core)
+    add_dependencies(${encoders_shared_lib}   htm_core)
+    add_dependencies(${algorithms_shared_lib} htm_core)
+endif()
 
 # Install the extension modules using scikit-build-core's install command
 install(TARGETS ${sdr_shared_lib} ${encoders_shared_lib} ${algorithms_shared_lib}

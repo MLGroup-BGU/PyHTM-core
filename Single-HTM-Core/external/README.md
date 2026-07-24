@@ -8,7 +8,7 @@
 | **cereal** 1.3.2 | `cereal.cmake` | `Serializable.hpp` — all save/load + pickling. Header-only. | GitHub (release tarball) |
 | **MurmurHash3** | `common.cmake` + `common/` | The RDSE encoder's hash bucketing. | **bundled** (compiled into the lib) |
 
-`bootstrap.cmake` is the entry point the top-level build includes; it also
+`bootstrap.cmake` is the entry point the top-level build includes. It also
 assembles `EXTERNAL_INCLUDES`.
 
 ## 📴 Air-gapped / offline builds

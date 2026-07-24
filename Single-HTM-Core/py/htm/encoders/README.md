@@ -11,6 +11,6 @@
 
 > ℹ️ **`date.py` is the only Python file in the wheel that computes.** A
 > native C++ `DateEncoder` also exists and is already bound
-> (`htm.bindings.encoders.DateEncoder`); moving PyHTM onto it is a
+> (`htm.bindings.encoders.DateEncoder`). Moving PyHTM onto it is a
 > PyHTM-phase candidate — the parameter semantics differ slightly, so it
 > needs an equivalence check first.

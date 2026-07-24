@@ -13,7 +13,9 @@ GIL release on a pinned worker pool.
 | **Python** (`htm_source.pipeline.pyramid_spec`) | Resolves every configuration-derived value (per-layer configs, timescale overrides, `potentialRadius` rounding, seeds, dims chaining, per-node summary strings) and hands the engine a fully-resolved spec dict. |
 | **C++** (this module) | Computes every data-derived value (deduced RDSE resolutions, adaptive quantile tables, dual-scalar fits), builds all nodes in parallel, and streams the dataset through the pyramid. |
 
-
+Result equivalence with the PyHTM Python implementation
+(`htm_source.model.htm_pyramid_python`) is exact — anomaly and activity
+arrays compare element-for-element across the flag × encoder matrix. See
 
 ## 📁 Layout
 
@@ -37,7 +39,7 @@ Details per folder: [`src/pyramid/`](src/pyramid/README.md) ·
 ## ⚙️ Build
 
 Built by the standard two-stage flow (see the
-[repository root README](../README.md)); stage 2 (`BINDING_BUILD=Python3`)
+[repository root README](../README.md)). Stage 2 (`BINDING_BUILD=Python3`)
 compiles this module into the wheel as `htm.bindings.pyramid_engine` and
 installs `htm/pyramid`.
 
@@ -45,8 +47,7 @@ Build switches (CMake cache variable or environment variable):
 
 | Switch | Values | Effect |
 |--------|--------|--------|
-| `HTM_TYPE` | `multi` (default) / `single` | `single` builds only the Single-HTM-Core bindings, skipping this module; PyHTM's model layer detects the missing engine and uses its Python pyramid implementation. |
-| `HTM_LTO` | `AUTO` (default) / `FULL` / `OFF` | `AUTO`: LTO across this module's translation units only (library untouched, bit-exactness preserved). `FULL`: library included (float digests change). |
+| `HTM_LTO` | `AUTO` (default) / `FULL` / `OFF` | `AUTO` applies LTO across this module's translation units only, leaving the library untouched. `FULL` includes the library, which shifts its floating-point results slightly. |
 | `HTM_MARCH` | `auto` (default) / `off` / `x86-64` / `x86-64-v2` / `x86-64-v3` / `x86-64-v4` / `native` | CPU SIMD level for both cores. `auto` probes the build host (CPUID + XGETBV). Explicit `-march`//`arch:` in `CXXFLAGS`/`CL` takes precedence over this switch. See [`DetectMarch.cmake`](../DetectMarch.cmake). |
 
 Dependencies: pybind11, CMake ≥ 3.21, a C++17 compiler, Threads —
@@ -93,19 +94,19 @@ scores = eng.results()        # {node: {'anomaly': f64[], 'activity': i64[]}}
   `lateral_exchange`), scheduling is dependency-released instead of
   layer-barriered — a node runs record *t* the moment its producers
   finished *t* and its ring slot is free, so up to `pipeline_depth`
-  records (default 4, spec key `pipeline_depth`; ≤1 disables) are in
+  records (default 4, spec key `pipeline_depth`. ≤1 disables) are in
   flight across layers. Each node still processes its own records
   strictly in order with identical inputs, so outputs are bit-identical
   to the barrier path (proven by the cross-mode equality tests). Ring
   memory: `K ×` per-node output SDRs — kilobytes.
 * Worker count resolution: `SLURM_CPUS_PER_TASK` → CPU affinity →
-  hardware concurrency, capped by `max_workers` and the widest layer;
+  hardware concurrency, capped by `max_workers` and the widest layer.
   `multiprocess=False` forces a single worker.
 
 ## 🧩 Extending the model spec
 
 Adding a future model parameter touches exactly four small places, in
-order; omitting a parameter never breaks anything:
+order. Omitting a parameter never breaks anything:
 
 1. **YAML / runner** — the value enters the model configuration as usual.
 2. **Builder** (`htm_source/pipeline/pyramid_spec.py`) — accept the kwarg
@@ -119,7 +120,7 @@ order; omitting a parameter never breaks anything:
    (`src/pyramid/spec/PyramidSpec.hpp` + the relevant runtime site).
 
 `multiprocess` illustrates the pattern end to end:
-`get_or<bool>(d, "multiprocess", true)`; `false` forces a single worker
+`get_or<bool>(d, "multiprocess", true)`. `false` forces a single worker
 thread, `true` sizes the pool from the environment. The PyHTM surface
 also accepts `multithreading` as the preferred alias for the same switch.
 
@@ -133,5 +134,5 @@ also accepts `multithreading` as the preferred alias for the same switch.
 | Per-layer `max_pool` | Unpacked per layer only when passed as a **tuple** (`isinstance(..., tuple)` in the build loop). |
 | Feature names | Must not contain `feature_join_str` (default `'_'`). |
 | Datetime features | Require all five date-encoder keys (`season`, `dayOfWeek`, `weekend`, `holiday`, `timeOfDay`) plus a `format` parameter. |
-| `std::exp/log/pow` | Scalar libm paths; on AVX-512 hosts a ≤ 1 ULP difference from numpy is possible in these calls. FMA contraction is disabled project-wide under march levels (`-ffp-contract=off`), keeping numeric output identical across every `HTM_MARCH` level. |
-| Library SIMD | The `htm_core` library compiles at `x86-64-v3` max; on v4 hosts its segment-histogram hot loop (`Connections::computeActivity`) uses an AVX-512 (`vpconflictd` + gather/scatter) integer kernel compiled per-file — order-independent integer addition, bit-identical to the scalar loop, measured ×1.24 on end-to-end run for 2048-column models (single worker). |
+| `std::exp/log/pow` | Scalar libm paths. On AVX-512 hosts a ≤ 1 ULP difference from numpy is possible in these calls. FMA contraction is disabled project-wide under march levels (`-ffp-contract=off`), keeping numeric output identical across every `HTM_MARCH` level. |
+| Library SIMD | The `htm_core` library compiles at `x86-64-v3` max. On v4 hosts its segment-histogram hot loop (`Connections::computeActivity`) uses an AVX-512 (`vpconflictd` + gather/scatter) integer kernel compiled per-file — order-independent integer addition, bit-identical to the scalar loop, measured ×1.24 on end-to-end run for 2048-column models (single worker). |

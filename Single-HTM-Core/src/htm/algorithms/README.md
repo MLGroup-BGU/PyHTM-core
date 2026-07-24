@@ -20,11 +20,12 @@
   hash maps (CSR-style), plus `reserveBuffers()` pre-sizing for the very
   allocation-heavy model-build phase.
 - **SpatialPooler** — `initialize()` reuses hoisted buffers instead of two
-  fresh input-sized vectors per column; `updateDutyCycles_` consumes raw
-  overlaps (no temporary SDR per step); global inhibition keeps a reusable
-  index scratch; boost updates early-out when `boostStrength == 0`;
+  fresh input-sized vectors per column. `updateDutyCycles_` consumes raw
+  overlaps (no temporary SDR per step). Global inhibition keeps a reusable
+  index scratch. Boost updates early-out when `boostStrength == 0`.
   `compute()` returns a movable overlaps vector.
 - **TemporalMemory** — `getPredictiveCells()` deduplicates the (already
   cell-sorted) active-segment list linearly instead of via a `std::set`.
 
-
+> ℹ️ **Every change above is behaviour-preserving.**
+> including RNG order and float-op order.

@@ -29,7 +29,7 @@ Python bindings. It ships **two engines in one wheel**:
   their inputs, runs them on a pinned worker pool, and streams a dataset
   through the whole structure natively.
 
-The Single engine is a self-contained HTM library usable on its own; the
+The Single engine is a self-contained HTM library usable on its own. The
 pyramid runtime is what PyHTM (`htm-streamer`) compiles and calls into for
 its anomaly-detection experiments.
 
@@ -68,7 +68,6 @@ runtime: contract, GIL model, threading, flags),
 **[`Single-HTM-Core/bindings/py/cpp_src/`](Single-HTM-Core/bindings/py/cpp_src/README.md)** (modules + GIL strategy), and
 **[`Single-HTM-Core/py/htm/`](Single-HTM-Core/py/htm/README.md)** (import surface).
 
-
 ---
 
 ## 🧩 System overview
@@ -91,11 +90,11 @@ Execution contract (the "instruction book"):
    definitions, merge modes and parameters, run-loop flags, and a data
    descriptor (native CSV path or a batched reader). PyHTM builds this
    dict via `htm_source.pipeline.build_pyramid_spec`.
-2. `PyramidEngine(spec)` parses it; `execute()` constructs encoders (with
+2. `PyramidEngine(spec)` parses it. `execute()` constructs encoders (with
    a sampling pass over the training slice when parameters are
    data-derived), builds all SP/TM nodes in parallel, and streams the
    dataset through the pyramid — all under a single GIL release. Data is
-   read natively in C++, one record at a time; the caller passes only a
+   read natively in C++, one record at a time. The caller passes only a
    fully-resolved absolute path.
 3. `results()` / `summaries()` return per-node anomaly + activity arrays
    and summary strings for downstream metrics and plotting.
@@ -110,18 +109,18 @@ Field-level spec documentation and the runtime model:
 
 | Interface | Requirement |
 |-----------|-------------|
-| C++ static library (`htm_core` + the pyramid runtime sources) | Any C++17 compiler; CMake ≥ 3.21. No language restriction beyond that — the library is callable from any environment with C++ interop (C++ executables, JNI, .NET C++/CLI, Rust `cxx`, etc.). |
-| Shipped Python bindings (`htm.bindings.*`, `htm.pyramid`) | CPython ≥ 3.9 (pybind11-based; no upper cap — see Requirements below). |
-| Data formats | Native CSV reader in C++; DataFrame / Parquet / chunked CSV through `htm.pyramid.DatasetReader` (pandas/pyarrow). |
+| C++ static library (`htm_core` + the pyramid runtime sources) | Any C++17 compiler. CMake ≥ 3.21. No language restriction beyond that — the library is callable from any environment with C++ interop (C++ executables, JNI, .NET C++/CLI, Rust `cxx`, etc.). |
+| Shipped Python bindings (`htm.bindings.*`, `htm.pyramid`) | CPython ≥ 3.9 (pybind11-based. No upper cap — see Requirements below). |
+| Data formats | Native CSV reader in C++. DataFrame / Parquet / chunked CSV through `htm.pyramid.DatasetReader` (pandas/pyarrow). |
 
 ## ⚠️ Limitations
 
-* The prebuilt binding modules target **CPython** (pybind11); PyPy and
+* The prebuilt binding modules target **CPython** (pybind11). PyPy and
   other interpreters are not targeted.
 * The pyramid engine consumes a **fully-resolved spec** — YAML parsing and
   parameter resolution live with the caller (PyHTM keeps them in Python).
 * Stochastic merge modes are reproducible only when a `seed` is supplied
-  in the merge parameters; without one, each call draws OS entropy.
+  in the merge parameters. Without one, each call draws OS entropy.
 * On AVX-512 hosts, scalar `std::exp/log/pow` calls may differ from
   numpy by ≤ 1 ULP (see the
   [behavioral notes](Pyramid-Model-Core/README.md#-behavioral-notes)).
@@ -139,10 +138,10 @@ Python extension modules.
 
 ### 📋 Requirements
 
-* **Python ≥ 3.9** (enforced by `pyproject.toml` and `htm_install.py`; no
+* **Python ≥ 3.9** (enforced by `pyproject.toml` and `htm_install.py`. No
   upper cap — classifiers cover 3.9–3.13, and newer interpreters work as
   the dependencies below publish support).
-* **Dependencies** (open floors): `numpy>=2.0` at runtime;
+* **Dependencies** (open floors): `numpy>=2.0` at runtime.
   `scikit-build-core>=0.10.7` + `pybind11>=2.13.6` at build time.
 * **Toolchain**: CMake ≥ 3.21, a C++17 compiler.
 
@@ -153,9 +152,8 @@ stages honor them:
 
 | Switch | Values | Effect |
 |--------|--------|--------|
-| `HTM_MARCH` | `auto` (default) / `off` / `x86-64` / `x86-64-v2` / `x86-64-v3` / `x86-64-v4` / `native` | CPU SIMD level for the generated code. `auto` probes the build host (CPUID + XGETBV, see [`DetectMarch.cmake`](DetectMarch.cmake)). The `htm_core` library itself is capped at `x86-64-v3` (v4 codegen measurably perturbs its floating-point results); its integer AVX-512 histogram kernel opts in per-file on v4 hosts, and the pyramid runtime uses the full detected level. Explicit `-march`/`/arch:` already present in `CXXFLAGS`/`CL` takes precedence and disables the adaptive selection. |
-| `HTM_TYPE` | `multi` (default) / `single` | `multi` builds both engines. `single` builds only the Single-HTM-Core bindings (`htm.bindings.sdr/.encoders/.algorithms`), skipping [`Pyramid-Model-Core`](Pyramid-Model-Core/README.md); PyHTM's model layer detects the missing engine and uses its Python pyramid implementation. |
-| `HTM_LTO` | `AUTO` (default) / `FULL` / `OFF` | `AUTO` link-time-optimizes the pyramid runtime's own translation units (measured ~×1.4 on the run loop) while the `htm_core` library's codegen — and its fixed-seed digests — stay unchanged. `FULL` extends LTO into the library for ~13% more, at the cost of ~1-ULP float changes inside it. |
+| `HTM_MARCH` | `auto` (default) / `off` / `x86-64` / `x86-64-v2` / `x86-64-v3` / `x86-64-v4` / `native` | CPU SIMD level for the generated code. `auto` probes the build host (CPUID + XGETBV, see [`DetectMarch.cmake`](DetectMarch.cmake)). The `htm_core` library itself is capped at `x86-64-v3` (v4 codegen measurably perturbs its floating-point results). Its integer AVX-512 histogram kernel opts in per-file on v4 hosts, and the pyramid runtime uses the full detected level. Explicit `-march`/`/arch:` already present in `CXXFLAGS`/`CL` takes precedence and disables the adaptive selection. |
+| `HTM_LTO` | `AUTO` (default) / `FULL` / `OFF` | `AUTO` link-time-optimizes the pyramid runtime's own translation units, measured at roughly ×1.4 on the run loop, while the `htm_core` library's codegen stays unchanged. `FULL` extends LTO into the library for about 13% more, at the cost of roughly 1-ULP floating-point changes inside it. |
 
 ---
 
@@ -166,7 +164,7 @@ PyHTM-core is licensed under the **GNU Affero General Public License v3
 
 The Single-HTM-Core engine derives from
 [htm.core](https://github.com/htm-community/htm.core) (HTM Community
-Edition of NuPIC; © 2013–2024 Numenta, Inc. and the htm.core community),
+Edition of NuPIC. © 2013–2024 Numenta, Inc. and the htm.core community),
 which is itself AGPLv3. Original copyright notices and source-file headers
 are preserved, and [`NOTICE`](NOTICE) carries the attribution. As required
 by the AGPL, derivative works remain under AGPLv3, and network-served

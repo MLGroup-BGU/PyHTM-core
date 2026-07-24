@@ -80,27 +80,6 @@ else()
   endif()
 endif()
 
-# Engine selection. HTM_TYPE (CMake cache variable or environment variable):
-#   multi   (default)  build BOTH engines: Single-HTM-Core bindings AND
-#                      Pyramid-Model-Core (htm.bindings.pyramid_engine +
-#                      htm.pyramid). The pyramid is a multi-HTM runtime.
-#   single             build ONLY the Single-HTM-Core bindings
-#                      (htm.bindings.sdr / .encoders / .algorithms).
-#                      PyHTM's model layer detects the absence of the
-#                      pyramid engine and uses its Python pyramid
-#                      implementation.
-if(DEFINED ENV{HTM_TYPE} AND NOT DEFINED CACHE{HTM_TYPE})
-  set(_htm_type_default $ENV{HTM_TYPE})
-else()
-  set(_htm_type_default multi)
-endif()
-set(HTM_TYPE "${_htm_type_default}" CACHE STRING
-    "Engine selection: multi (Single + Pyramid) | single (Single only)")
-set_property(CACHE HTM_TYPE PROPERTY STRINGS multi single)
-string(TOLOWER "${HTM_TYPE}" _htm_type_lc)
-if(NOT _htm_type_lc STREQUAL "multi" AND NOT _htm_type_lc STREQUAL "single")
-  message(FATAL_ERROR "HTM_TYPE must be 'multi' or 'single', got: '${HTM_TYPE}'")
-endif()
 
 # CommonCompilerConfig.cmake (shared toolchain flags for both cores) lives at
 # the repository root; the single-core area is registered as REPOSITORY_DIR
@@ -193,10 +172,5 @@ else()
 	# Single-HTM-Core: htm.bindings.sdr / .encoders / .algorithms
 	add_subdirectory(Single-HTM-Core/bindings/py/cpp_src)
 	# Pyramid-Model-Core: htm.bindings.pyramid_engine + htm.pyramid
-	# (built when HTM_TYPE=multi -- see the HTM_TYPE block above).
-	if(_htm_type_lc STREQUAL "multi")
-		add_subdirectory(Pyramid-Model-Core)
-	else()
-		message(STATUS "HTM_TYPE=single -- building Single-HTM-Core bindings only")
-	endif()
+	add_subdirectory(Pyramid-Model-Core)
 endif()

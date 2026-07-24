@@ -300,7 +300,14 @@ void WorkerPool::worker_main(std::size_t idx) {
                         n->init_tm();
                         const std::size_t k = initDone_.fetch_add(
                             1, std::memory_order_relaxed) + 1;
-                        std::printf("\r[Init] %zu/%zu nodes", k, nNodes_);
+                        /* Redraw in place on a terminal. In a file the
+                         * carriage returns would collapse the whole count
+                         * into one line, so append there instead. */
+                        if (htm_pyramid::stdout_is_terminal()) {
+                            std::printf("\r[Init] %zu/%zu nodes", k, nNodes_);
+                        } else {
+                            std::printf("[Init] %zu/%zu nodes\n", k, nNodes_);
+                        }
                         std::fflush(stdout);
                     }
                     if (abortInit_.load(std::memory_order_acquire)) break;

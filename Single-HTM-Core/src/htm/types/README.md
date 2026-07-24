@@ -14,7 +14,7 @@
 ## ➖ `subtract` (added for PyHTM)
 
 ```cpp
-out.subtract(minuend, subtrahend);   // out = minuend AND NOT subtrahend
+out.subtract(minuend, subtrahend).   // out = minuend AND NOT subtrahend
 ```
 
 Sorted-sparse set difference in a single `std::set_difference` pass — no
@@ -24,6 +24,6 @@ previously did it with Python sets (measured ×117 slower). The Python
 binding releases the GIL around it.
 
 > ℹ️ SDR views are converted lazily and cached: `getSparse()` after
-> `setSparse()` is free; the first `getDense()` after a sparse write pays a
+> `setSparse()` is free. The first `getDense()` after a sparse write pays a
 > one-time scatter. The bindings expose `sdr.sparse` as a **zero-copy**
 > NumPy view into the C++ buffer.

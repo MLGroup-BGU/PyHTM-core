@@ -529,14 +529,39 @@ std::int64_t PyramidRuntime::run_pipelined(RecordSource &source,
             std::int64_t lastShown = -1;
             auto lastT = std::chrono::steady_clock::now();
             htm_pyramid::RateWindow rw;   // current-speed window (~6 s)
+
+            /* A terminal gets the line redrawn in place. Anything else -- an
+             * sbatch log, a pipe, a redirect -- gets one appended line per
+             * step of percent, because carriage returns in a file produce a
+             * single unreadable line rather than an animation. */
+            const bool tty = htm_pyramid::stdout_is_terminal();
+            const int pctStep = htm_pyramid::progress_percent_step();
+            int lastPct = -1;
+
             while (running.load(std::memory_order_acquire)) {
                 const std::int64_t d = headDone.load(
                                            std::memory_order_acquire) + 1;
                 const auto now = std::chrono::steady_clock::now();
-                if (d > lastShown && d > 0 &&
-                    (d / progress_every > lastShown / progress_every ||
-                     std::chrono::duration<double>(now - lastT).count() >=
-                         htm_pyramid::PROGRESS_REFRESH_SECONDS)) {
+                bool due;
+                if (tty) {
+                    due = d > lastShown && d > 0 &&
+                          (d / progress_every > lastShown / progress_every ||
+                           std::chrono::duration<double>(now - lastT).count() >=
+                               htm_pyramid::PROGRESS_REFRESH_SECONDS);
+                } else {
+                    /* Without a total there is no percentage to step through,
+                     * so fall back to a slow wall-clock cadence. */
+                    const int pct = total > 0
+                        ? static_cast<int>(100.0 * static_cast<double>(d) / total)
+                        : -1;
+                    due = d > lastShown && d > 0 &&
+                          (pct >= 0
+                               ? pct / pctStep > lastPct / pctStep
+                               : std::chrono::duration<double>(now - lastT)
+                                         .count() >= 10.0);
+                    if (due && pct >= 0) lastPct = pct;
+                }
+                if (due) {
                     lastShown = d;
                     lastT = now;
                     const double el = std::chrono::duration<double>(
@@ -553,24 +578,32 @@ std::int64_t PyramidRuntime::run_pipelined(RecordSource &source,
                         const double frac =
                             total > 0 ? static_cast<double>(d) / total : 0.0;
                         htm_pyramid::progress_bar(frac, bar, 24);
-                        std::printf("\r[Run] %s %5.1f%%  %lld/%lld records  "
+                        std::printf("%s[Run] %s %5.1f%%  %lld/%lld records  "
                                     "%.1f record/second  elapsed %s  "
-                                    "estimated time remaining %s        ",
+                                    "estimated time remaining %s        %s",
+                                    tty ? "\r" : "",
                                     bar, 100.0 * frac,
                                     static_cast<long long>(d),
                                     static_cast<long long>(total), rate,
                                     htm_pyramid::fmt_hms(el).c_str(),
-                                    htm_pyramid::fmt_hms(eta).c_str());
+                                    htm_pyramid::fmt_hms(eta).c_str(),
+                                    tty ? "" : "\n");
                     }
                     else {
-                        std::printf("\r[Run] %lld records  %.1f record/second  "
-                                    "elapsed %s        ",
+                        std::printf("%s[Run] %lld records  %.1f record/second  "
+                                    "elapsed %s        %s",
+                                    tty ? "\r" : "",
                                     static_cast<long long>(d), rate,
-                                    htm_pyramid::fmt_hms(el).c_str());
+                                    htm_pyramid::fmt_hms(el).c_str(),
+                                    tty ? "" : "\n");
                     }
                     std::fflush(stdout);
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                /* A terminal is polled often so the bar looks alive. A file
+                 * only ever gets a line per step of percent, so polling that
+                 * fast just burns cycles. */
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(tty ? 5 : 200));
             }
         });
     }

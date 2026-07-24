@@ -27,8 +27,8 @@ collapsing the 6-7 boundary crossings of the per-call path into one.
 
 | File | Role |
 |---|---|
-| `bindings/py_utils.hpp` | Shared helpers (`get_it`/`get_end` NumPy accessors). Lived under the removed `engine/` bindings upstream; relocated here. |
+| `bindings/py_utils.hpp` | Shared helpers (`get_it`/`get_end` NumPy accessors). Lived under the removed `engine/` bindings upstream. Relocated here. |
 | `bindings/suppress_register.hpp` | Must be included **before** `pybind11.h` (works around a register-keyword warning). |
 
-Build wiring lives in [`CMakeLists.txt`](CMakeLists.txt); the modules are
+Build wiring lives in [`CMakeLists.txt`](CMakeLists.txt). The modules are
 installed into the wheel's `htm/bindings/` by scikit-build-core.
