@@ -82,8 +82,23 @@ if(NOT pybind11_FOUND)
     endif()
 endif()
 
-set(htm_core_lib_path  "${HTM_CORE_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}htm_core${CMAKE_STATIC_LIBRARY_SUFFIX}")
-message(STATUS "htm_core_lib_path = ${htm_core_lib_path}")
+# How the modules refer to the library.
+#
+# When it is built in this same configure, link by TARGET NAME. CMake then
+# resolves the file itself, which matters for multi-config generators such as
+# Visual Studio that place outputs under a per-configuration subdirectory
+# (build/src/Release/htm_core.lib, not build/src/htm_core.lib), and it also
+# orders the build so the library is finished first.
+#
+# When a parent project stages the library from an earlier build stage its
+# target does not exist here, so fall back to the explicit path.
+if(TARGET htm_core)
+    set(htm_core_lib_path htm_core)
+    message(STATUS "htm_core_lib_path = htm_core (target in this build)")
+else()
+    set(htm_core_lib_path  "${HTM_CORE_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}htm_core${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    message(STATUS "htm_core_lib_path = ${htm_core_lib_path}")
+endif()
 #
 # Python support
 #
@@ -172,19 +187,6 @@ target_include_directories(${encoders_shared_lib} PRIVATE
         SYSTEM ${pybind11_INCLUDE_DIRS}
         SYSTEM ${EXTERNAL_INCLUDES}
 	)
-
-# The modules link the library by FILE PATH, not by target name, because a
-# parent project may hand us a library staged by an earlier build stage whose
-# target does not exist in this configure. A path carries no dependency edge,
-# so when the library IS built in this same configure the generator has no
-# reason to build it first -- and a parallel build races, failing with
-# "No rule to make target 'src/libhtm_core.a'". Declaring the order here fixes
-# that, and is skipped when the target is absent.
-if(TARGET htm_core)
-    add_dependencies(${sdr_shared_lib}        htm_core)
-    add_dependencies(${encoders_shared_lib}   htm_core)
-    add_dependencies(${algorithms_shared_lib} htm_core)
-endif()
 
 # Install the extension modules using scikit-build-core's install command
 install(TARGETS ${sdr_shared_lib} ${encoders_shared_lib} ${algorithms_shared_lib}
