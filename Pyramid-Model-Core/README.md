@@ -93,9 +93,15 @@ scores = eng.results()        # {node: {'anomaly': f64[], 'activity': i64[]}}
 * Cross-record pipeline: with more than one worker (and no
   `lateral_exchange`), scheduling is dependency-released instead of
   layer-barriered — a node runs record *t* the moment its producers
-  finished *t* and its ring slot is free, so up to `pipeline_depth`
-  records (default 4, spec key `pipeline_depth`. ≤1 disables) are in
-  flight across layers. Each node still processes its own records
+  finished *t* and its ring slot is free, so up to `K` records are in
+  flight across layers. The spec key `pipeline_depth` selects `K`:
+  `0` (the default) = auto, `1` disables the pipeline, `>1` forces an
+  explicit depth. Auto resolves to
+  `K = clamp(floor(n_workers × K_WORKER_FACTOR), K_MIN, K_MAX)`, today
+  `factor 1.0, K_MIN 16, K_MAX 64`; an explicit value is clamped to the
+  same bounds. The three constants live at the top of
+  `src/pyramid/runtime/PipelineRun.cpp`, and the environment variable
+  `PYRAMID_PIPE_DEPTH` overrides everything. Each node still processes its own records
   strictly in order with identical inputs, so outputs are bit-identical
   to the barrier path (proven by the cross-mode equality tests). Ring
   memory: `K ×` per-node output SDRs — kilobytes.
