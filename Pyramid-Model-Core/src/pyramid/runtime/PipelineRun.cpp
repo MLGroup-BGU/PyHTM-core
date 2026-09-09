@@ -90,12 +90,13 @@ void PyramidRuntime::pipe_wake() {
 }
 
 void PyramidRuntime::ws_merge_or_copy(WorkerScratch &ws, MergeMode mode,
-                                      const MergeParams &params, SDR &out) {
+                                      const MergeParams &params,
+                                      const MergeCall &call, SDR &out) {
     if (ws.inputs.size() == 1)
         out.setSDR(*ws.inputs[0]);      // Python returns the object itself
     else
         ws.merger.merge(ws.inputs, mode, spec_.merge.concat_axis, params,
-                        out);
+                        call, out);
 }
 
 void PyramidRuntime::allocate_pipeline() {
@@ -247,7 +248,9 @@ void PyramidRuntime::encode_into_l0ring(const Record &rec, std::int64_t t,
             out.setSDR(*ws.inputs[0]);
         else
             ws_merge_or_copy(ws, spec_.merge.feature_mode,
-                             spec_.merge.feature_params, out);
+                             spec_.merge.feature_params,
+                             MergeCall{nodeKey_[0][p], t,
+                                       MergeSlot::FeatureMerge}, out);
     }
 }
 
@@ -297,7 +300,7 @@ void PyramidRuntime::merge_children_ring(std::size_t li, std::size_t p,
             for (std::size_t q = 0; q < layers_[l].size(); ++q)
                 ws.inputs.push_back(&outRing_[l][q][k]);
         ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params,
-                         out);
+                         MergeCall{nodeKey_[li][p], t, MergeSlot::Children}, out);
         return;
     }
 
@@ -309,11 +312,13 @@ void PyramidRuntime::merge_children_ring(std::size_t li, std::size_t p,
             SDR &skip = skipSlots_.at(parent);       // owner-exclusive
             ws.merger.merge(ws.inputs, spec_.merge.htm_mode,
                             spec_.merge.concat_axis,
-                            spec_.merge.htm_params, skip);
+                            spec_.merge.htm_params,
+                            MergeCall{nodeKey_[li][p], t,
+                                      MergeSlot::SqueezeSkip}, skip);
             ws.inputs.push_back(&skip);
         }
         ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params,
-                         out);
+                         MergeCall{nodeKey_[li][p], t, MergeSlot::BroadcastHead}, out);
         return;
     }
 
@@ -343,25 +348,28 @@ void PyramidRuntime::merge_children_ring(std::size_t li, std::size_t p,
         ws.inputs.clear();
         for (const auto &pr : ws.pairs) ws.inputs.push_back(pr.first);
         ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params,
-                         ma);
+                         MergeCall{nodeKey_[li][p], t, MergeSlot::Children}, ma);
         ws.inputs.clear();
         for (const auto &pr : ws.pairs) ws.inputs.push_back(pr.second);
         ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params,
-                         mp);
+                         MergeCall{nodeKey_[li][p], t, MergeSlot::ChildrenPred}, mp);
         ws.inputs.clear();
         ws.inputs.push_back(&ma);
         ws.inputs.push_back(&mp);
         ws.merger.merge(ws.inputs, MergeMode::Stack, 0,
-                        spec_.merge.htm_params, out);
+                        spec_.merge.htm_params,
+                        MergeCall{nodeKey_[li][p], t, MergeSlot::Children}, out);
         return;
     }
 
     ws.inputs.clear();
     for (const auto &pr : ws.pairs) ws.inputs.push_back(pr.first);
-    ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params, out);
+    ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params,
+                     MergeCall{nodeKey_[li][p], t, MergeSlot::Children}, out);
 }
 
 const SDR *PyramidRuntime::apply_head_extras_ws(const SDR *current,
+                                                std::int64_t t,
                                                 WorkerScratch &ws) {
     /* Head-owner exclusive; state members (prevHeadSdr_, memorySdr_,
      * headBufA_/B_) are touched only here, strictly in record order. */
@@ -371,6 +379,7 @@ const SDR *PyramidRuntime::apply_head_extras_ws(const SDR *current,
         ws.inputs.push_back(&prevHeadSdr_);
         ws.merger.merge(ws.inputs, spec_.merge.htm_mode,
                         spec_.merge.concat_axis, spec_.merge.htm_params,
+                        MergeCall{nodeKey_[nLayers_ - 1][0], t, MergeSlot::RecurrentHead},
                         headBufA_);
         current = &headBufA_;
     }
@@ -385,6 +394,7 @@ const SDR *PyramidRuntime::apply_head_extras_ws(const SDR *current,
             ws.inputs.push_back(current);
             ws.merger.merge(ws.inputs, spec_.merge.htm_mode,
                             spec_.merge.concat_axis, spec_.merge.htm_params,
+                            MergeCall{nodeKey_[nLayers_ - 1][0], t, MergeSlot::MemoryUpdate},
                             memoryBuf_);
             memorySdr_.setSDR(memoryBuf_);
         }
@@ -393,6 +403,7 @@ const SDR *PyramidRuntime::apply_head_extras_ws(const SDR *current,
         ws.inputs.push_back(&memorySdr_);
         ws.merger.merge(ws.inputs, spec_.merge.htm_mode,
                         spec_.merge.concat_axis, spec_.merge.htm_params,
+                        MergeCall{nodeKey_[nLayers_ - 1][0], t, MergeSlot::MemoryApply},
                         headBufB_);
         current = &headBufB_;
     }
@@ -413,7 +424,7 @@ void PyramidRuntime::pipe_exec_node(std::size_t li, std::size_t p,
         SDR &slot = inputSlots_.at(spec_.layers[li][p]);
         merge_children_ring(li, p, t, with_residual, ws, slot);
         if (is_head && !spec_.flags.squeeze_skip)
-            n->set_input(apply_head_extras_ws(&slot, ws));
+            n->set_input(apply_head_extras_ws(&slot, t, ws));
     }
 
     n->step();

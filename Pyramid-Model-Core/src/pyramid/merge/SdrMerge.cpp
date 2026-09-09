@@ -143,9 +143,17 @@ void SdrMerger::sample_and_set(const std::vector<std::int64_t> &candidates,
                                const double *probs, std::int64_t n_sample,
                                const MergeParams &params, SDR &out) {
     /* rng = np.random.default_rng(seed): FRESH generator per merge call.
+     *
+     * The seed is derived from the base seed together with the node, the
+     * merge slot and the record index (SeedMix.hpp), so repeated inputs at
+     * one node draw from different streams while the run as a whole stays
+     * reproducible and independent of thread scheduling.
+     *
      * seed=None (has_seed=false) draws OS entropy, exactly like Python. */
-    NumpyGenerator rng = params.has_seed ? NumpyGenerator(params.seed)
-                                         : NumpyGenerator();
+    NumpyGenerator rng =
+        params.has_seed
+            ? NumpyGenerator(derive_merge_seed(params.seed, call_))
+            : NumpyGenerator();
     rng.choice_no_replace_p(static_cast<std::int64_t>(candidates.size()),
                             n_sample, probs, sampled_,
                             pCopy_, cdf_, xDraw_, newIdx_, seen_);
@@ -509,7 +517,9 @@ void SdrMerger::mode_di(std::int64_t total_bits, const MergeParams &p, SDR &out)
 
 /* ------------------------------------------------------------------------ */
 void SdrMerger::merge(const std::vector<const SDR *> &inputs, MergeMode mode,
-                      int axis, const MergeParams &params, SDR &out) {
+                      int axis, const MergeParams &params,
+                      const MergeCall &call, SDR &out) {
+    call_ = call;
     NTA_CHECK(!inputs.empty()) << "sdr_merge needs at least one input";
 
     /* Python: `if len(inputs) == 1: return inputs[0]` -- the runtime

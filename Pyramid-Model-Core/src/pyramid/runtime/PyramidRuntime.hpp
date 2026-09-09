@@ -149,6 +149,11 @@ private:
     std::unique_ptr<WorkerPool> pool_;
     std::int64_t currentIter_ = 0;
 
+    /* Per-node seeding key, [layer][pos].  Built once from the node NAME
+     * (L{layer}_{node}, timescale excluded -- see SeedMix.hpp) so the hot
+     * path never parses a string. */
+    std::vector<std::vector<std::uint64_t>> nodeKey_;
+
     /* -- cross-record pipeline ------------------------------------------
      * Records-in-flight scheduling: a node runs record t as soon as all of
      * its PRODUCERS finished t (dependency release, no layer barrier) and
@@ -196,9 +201,10 @@ private:
                              bool with_residual, WorkerScratch &ws,
                              htm::SDR &out);
     const htm::SDR *apply_head_extras_ws(const htm::SDR *current,
-                                         WorkerScratch &ws);
+                                         std::int64_t t, WorkerScratch &ws);
     void ws_merge_or_copy(WorkerScratch &ws, MergeMode mode,
-                          const MergeParams &params, htm::SDR &out);
+                          const MergeParams &params, const MergeCall &call,
+                          htm::SDR &out);
     std::int64_t run_pipelined(RecordSource &source, std::int64_t limit,
                                std::int64_t progress_every,
                                std::int64_t total);
@@ -221,7 +227,7 @@ private:
                             bool with_residual, htm::SDR &out);
     const htm::SDR *apply_head_extras(const htm::SDR *current);
     void merge_or_copy(MergeMode mode, const MergeParams &params,
-                       htm::SDR &out);   // over mergeInputs_
+                       const MergeCall &call, htm::SDR &out);   // over mergeInputs_
 };
 
 } // namespace pyramid

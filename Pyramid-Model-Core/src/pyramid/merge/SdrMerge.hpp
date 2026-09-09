@@ -36,6 +36,8 @@
 
 #include <htm/types/Sdr.hpp>
 
+#include <pyramid/rng/SeedMix.hpp>
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -100,9 +102,14 @@ public:
      * - Duplicate input pointers are legal and meaningful (anomaly-boost
      *   passes the same child several times; each occurrence increments the
      *   activation counts exactly as np.stack of repeated .dense does).
+     * - `call` identifies WHICH node, WHICH merge and WHICH record this is;
+     *   the stochastic modes fold it into the seed (see SeedMix.hpp).  It is
+     *   required rather than defaulted so that a new call site cannot
+     *   silently inherit another one's random stream.
      */
     void merge(const std::vector<const htm::SDR *> &inputs, MergeMode mode,
-               int axis, const MergeParams &params, htm::SDR &out);
+               int axis, const MergeParams &params, const MergeCall &call,
+               htm::SDR &out);
 
     /* sdr_max_pool: divide coordinates on `axis` by `ratio` (>= 2), collapsing
      * duplicates (set semantics).  `out` must carry the pooled dimensions.
@@ -110,6 +117,11 @@ public:
     void max_pool(const htm::SDR &in, int ratio, int axis, htm::SDR &out);
 
 private:
+    /* Identity of the merge currently being executed.  Set by merge() and
+     * read by sample_and_set().  One SdrMerger is owned per worker thread
+     * (and one by the serial runtime), so this needs no synchronisation. */
+    MergeCall call_{};
+
     /* -- activation-count workspace (see class comment) ------------------- */
     std::vector<double>       counts_;      // full-size, cleared via touched_
     std::vector<std::int64_t> touched_;     // indices written in counts_
