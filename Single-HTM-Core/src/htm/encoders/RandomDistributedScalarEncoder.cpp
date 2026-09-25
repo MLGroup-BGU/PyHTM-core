@@ -106,7 +106,38 @@ void RandomDistributedScalarEncoder::encode(Real64 input, SDR &output)
   auto &data = output.getDense();
   fill( data.begin(), data.end(), 0u );
 
-  const UInt index = (UInt) (input / args_.resolution);
+  // Bucket index of the input.
+  //
+  // The index used to be `(UInt) (input / args_.resolution)`. That cast is
+  // undefined in C++ whenever the quotient is negative or does not fit in a
+  // UInt, and its result then depends on the build. An x86-64 baseline/AVX2
+  // build truncates toward zero into 64 bits and keeps the low 32 bits: a
+  // quotient between 2^32 and 2^63 lands on an arbitrary bucket, and one at
+  // or beyond 2^63 (e.g. a tiny resolution) on bucket 0, the exact code of 0.
+  // An AVX-512 build returns 0xFFFFFFFF for every negative or too-large
+  // quotient, and that code is almost the code of bucket 0.
+  //
+  // The computation below is defined for every input:
+  //   * inside +/- kMaxBucket it gives exactly the bucket the x86-64
+  //     baseline/AVX2 build gave before (truncate toward zero in 64 bits,
+  //     keep the low 32 bits), so encodings of in-range inputs do not change;
+  //   * beyond it, the quotient is clamped to the last bucket on its own side
+  //     of the scale, so an out-of-range input takes the most extreme
+  //     encoding the feature has: the top bucket for a positive input, the
+  //     bottom bucket for a negative one, and never a code near bucket 0.
+  // kMaxBucket is 2^30, so the top and the bottom buckets sit 2^31 apart in
+  // the UInt ring and their activeBits-long windows never overlap.
+  constexpr Real64 kMaxBucket = 1073741824.0;   // 2^30
+  Real64 quotient = input / args_.resolution;
+  if( quotient > kMaxBucket ) {
+    quotient = kMaxBucket;
+  }
+  else if( quotient < -kMaxBucket ) {
+    quotient = -kMaxBucket;
+  }
+  const Int64 signed_index = static_cast<Int64>( quotient );   // truncates toward zero
+  const UInt  index = static_cast<UInt>( static_cast<UInt64>( signed_index ) );
+
   for(auto offset = 0u; offset < args_.activeBits; ++offset)
   {
     UInt hash_buffer = index + offset;
