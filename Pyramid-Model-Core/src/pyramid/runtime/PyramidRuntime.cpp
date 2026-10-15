@@ -114,6 +114,7 @@ void PyramidRuntime::build_nodes() {
             NTA_CHECK(it != spec_.nodes.end())
                 << "node `" << name << "` missing from spec.nodes";
             auto node = std::make_unique<HtmNode>(it->second);
+            node->set_record_signals(spec_.flags.record_signals);
             nodePos_[name] = {li, layers_[li].size()};
             layers_[li].push_back(node.get());
             nodes_.emplace(name, std::move(node));
@@ -735,6 +736,10 @@ NodeResults PyramidRuntime::results_for(const std::string &node) const {
     NodeResults res;
     res.anomaly = it->second->anomaly_history();
     res.activity = it->second->activity_history();
+    res.pred_columns = it->second->pred_columns_history();
+    res.pred_hits = it->second->pred_hits_history();
+    res.pred_cells = it->second->pred_cells_history();
+    res.sp_overlap = it->second->sp_overlap_history();
     return res;
 }
 

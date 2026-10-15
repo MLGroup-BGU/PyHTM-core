@@ -67,6 +67,8 @@ namespace pyramid {
 struct NodeResults {
     std::vector<double> anomaly;          // may be empty (anomaly_score off)
     std::vector<std::int64_t> activity;   // n active columns per step
+    std::vector<std::uint16_t> pred_columns, pred_hits, pred_cells;
+    std::vector<float> sp_overlap;
 };
 
 class PyramidRuntime {

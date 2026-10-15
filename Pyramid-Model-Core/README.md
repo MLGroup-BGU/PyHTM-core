@@ -27,7 +27,7 @@ arrays compare element-for-element across the flag × encoder matrix. See
 | `src/pyramid/encoders/` | RDSE / adaptive / hybrid / dual-scalar / categorical / date encoders + sample-derived parameter builders |
 | `src/pyramid/spec/` | `PyramidSpec` — the parsed spec structs |
 | `src/pyramid/data/` | `RecordSource` interface + native `CsvSource` |
-| `src/pyramid/runtime/` | `HtmNode` (SP+TM step, squeeze, max-pool, residual) + `PyramidRuntime` (per-record loop and the extension chain) |
+| `src/pyramid/runtime/` | `HtmNode` (SP+TM step; the node output is its active columns, or the surprised columns under RTM; squeeze, max-pool) + `PyramidRuntime` (per-record loop and the extension chain) |
 | `src/pyramid/threading/` | `WorkerPool`: pinned ownership, weighted-LPT partition, layer barrier |
 | `bindings/` | pybind11 module `htm.bindings.pyramid_engine` (`PyramidEngine`, `probe_encoder_dims`) + `PyReaderSource` |
 | `py/pyramid_support/` | `htm.pyramid.DatasetReader` — the batched Python feeder |
@@ -129,6 +129,33 @@ order. Omitting a parameter never breaks anything:
 `get_or<bool>(d, "multiprocess", true)`. `false` forces a single worker
 thread, `true` sizes the pool from the environment. The PyHTM surface
 also accepts `multithreading` as the preferred alias for the same switch.
+
+## 🔗 What enters and leaves a node
+
+- **Into an L0 node** (`feature_merge_mode: c`): the feature encodings are concatenated,
+  one slice per feature, in the node's feature order (numpy.concatenate rule: inputs may
+  differ in length along the concat axis). Nothing is sampled or overlaid, so equal values
+  always give an identical node input. Every other merge mode overlays its inputs on one
+  index space and therefore requires identical input dimensions.
+- **Into a parent node** (`htm_merge_mode: c`): the children's outputs concatenated, one
+  2048-bit slice per child in connection order (a single child is copied). As NuPIC's Network
+  API and htm.core's "fanin" links do, each source keeps its own portion of the input buffer.
+- **Out of every node**: its active columns (`columnDimensions` bits, `localAreaDensity`
+  of them on), or under RTM (`anomaly_detector`) the surprised columns (active, not
+  predicted). The TM's cells stay internal: they hold the node's temporal context and
+  produce its anomaly score. Every node therefore sends the same number of bits whether
+  it is surprised or not, and the output width does not depend on the TM size. htm.core's
+  region API offers the same column-level output (`TMRegion`, `orColumnOutputs`).
+- **Per-node signals (optional)**: with `record_signals` in the run flags (the model config's
+  `general.record_signals`), every node
+  also records per record its predicted columns, predicted-and-active columns, predictive cells and
+  the mean SP overlap of its winning columns (10 bytes per node and record, handed to Python once
+  at the end of the run, like the scores). Off unless the config asks for it.
+- **SP settings that come from the config** include `dutyCyclePeriod` and
+  `minPctOverlapDutyCycle` (defaults 1000 / 0.001 when absent). With
+  `stimulusThreshold: 0` every node activates exactly `localAreaDensity` of its columns on
+  every record; ties at the cut-off go to the higher column index, as in NuPIC and
+  htm.core, which keeps the same input mapped to the same columns.
 
 ## 📌 Behavioral notes
 

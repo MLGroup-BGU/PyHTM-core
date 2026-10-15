@@ -10,7 +10,7 @@ One folder per concern.
 | `encoders/` | `FeatureEncoders` (rdse/adaptive/hybrid/dual/categorical/date), `EncoderBuild` (sample-derived params: deduced resolution, adaptive quantile table, dual fit), `DateMath` |
 | `spec/` | `PyramidSpec` structs — the parsed instruction book, incl. preformatted per-node `summary` strings from the Python builder |
 | `data/` | `RecordSource` + `CsvSource` (native CSV: header map, dt strptime, row slicing) |
-| `runtime/` | `HtmNode` (SP→TM step order, squeeze/restore, max-pool, residual modes) and `PyramidRuntime` (per-record loop: encode → feature merge → layers → extras chain → results) |
+| `runtime/` | `HtmNode` (SP→TM step order; output = active columns, or surprised columns under RTM; squeeze/restore, max-pool, residual modes) and `PyramidRuntime` (per-record loop: encode → feature merge → layers → extras chain → results) |
 | `threading/` | `WorkerPool` — pinned ownership, weighted LPT with carried loads (verbatim `balanced_partition_weighted` arithmetic), mailbox + layer barrier, first-error rethrow |
 
 ### 🎲 Merge seeding

@@ -8,6 +8,7 @@
  * including its pairwise `.sum()`), or the sampled bit sets will drift from
  * the Python pyramid's.
  * ------------------------------------------------------------------------ */
+#include <limits>
 #include "SdrMerge.hpp"
 
 #include <htm/utils/Log.hpp>
@@ -65,9 +66,10 @@ static int positify_axis(int axis, int ndim) {
     return axis;
 }
 
-/* Port of _check_shapes: sdr_merge requires IDENTICAL dimensions across all
- * inputs, for every mode (including concat/stack -- the Python code runs
- * this check before dispatching). */
+/* Port of _check_shapes: every mode except concat requires IDENTICAL
+ * dimensions across all inputs (union-style modes overlay the inputs on one
+ * shared index space, stack adds a new leading axis). Concat follows its own
+ * rule -- see concat_output_dims / check_concat_shapes below. */
 static const std::vector<UInt> &check_shapes(
         const std::vector<const SDR *> &inputs) {
     const auto &s0 = inputs[0]->dimensions;
@@ -77,24 +79,79 @@ static const std::vector<UInt> &check_shapes(
     return s0;
 }
 
+/* Concat shape rule == numpy.concatenate / utils.sdr.concat_shapes: every
+ * input has the same rank and the same size on every axis except `axis`; the
+ * output's size on `axis` is the SUM of the inputs' sizes there. Inputs may
+ * therefore differ in length along the concat axis (e.g. a 1024-bit RDSE next
+ * to a date encoder) -- the same thing htm.core's SDR::concatenate and
+ * NuPIC's MultiEncoder do. Equal-size inputs give exactly the old result. */
+static std::vector<UInt> concat_output_dims(
+        const std::vector<std::vector<UInt>> &input_dims, int axis) {
+    NTA_CHECK(!input_dims.empty());
+    const auto &d0 = input_dims[0];
+    const int ndim = static_cast<int>(d0.size());
+    NTA_CHECK(ndim >= 1) << "concat: zero-rank SDR";
+    const int a = positify_axis(axis, ndim);
+    NTA_CHECK(a < ndim) << "Invalid axis " << axis << " for shapes with "
+                        << ndim << " dimensions";
+    std::uint64_t along = 0;
+    for (const auto &d : input_dims) {
+        NTA_CHECK(d.size() == d0.size())
+            << "All shapes must have same number of dimensions";
+        for (int k = 0; k < ndim; ++k)
+            if (k != a)
+                NTA_CHECK(d[static_cast<std::size_t>(k)] == d0[static_cast<std::size_t>(k)])
+                    << "Shapes must be equal in all axes except the "
+                    << "concatenated axis, got different shapes for axis " << k;
+        along += d[static_cast<std::size_t>(a)];
+    }
+    NTA_CHECK(along <= static_cast<std::uint64_t>(std::numeric_limits<UInt>::max()))
+        << "concat: output too large";
+    auto out = d0;
+    out[static_cast<std::size_t>(a)] = static_cast<UInt>(along);
+    return out;
+}
+
+/* Hot-path twin of concat_output_dims: validates the runtime inputs against
+ * the preallocated output WITHOUT allocating (called once per merge). */
+static int check_concat_shapes(const std::vector<const SDR *> &inputs,
+                               int axis, const SDR &out) {
+    const auto &d0 = inputs[0]->dimensions;
+    const int ndim = static_cast<int>(d0.size());
+    NTA_CHECK(ndim >= 1) << "concat: zero-rank SDR";
+    const int a = positify_axis(axis, ndim);
+    NTA_CHECK(a < ndim) << "Invalid axis " << axis << " for shapes with "
+                        << ndim << " dimensions";
+    NTA_CHECK(out.dimensions.size() == d0.size())
+        << "concat: output rank != input rank";
+    std::uint64_t along = 0;
+    for (const SDR *in : inputs) {
+        const auto &d = in->dimensions;
+        NTA_CHECK(d.size() == d0.size())
+            << "All shapes must have same number of dimensions";
+        for (int k = 0; k < ndim; ++k)
+            if (k != a)
+                NTA_CHECK(d[static_cast<std::size_t>(k)] == out.dimensions[static_cast<std::size_t>(k)])
+                    << "Shapes must be equal in all axes except the "
+                    << "concatenated axis, got different shapes for axis " << k;
+        along += d[static_cast<std::size_t>(a)];
+    }
+    NTA_CHECK(along == out.dimensions[static_cast<std::size_t>(a)])
+        << "concat: output size on axis " << a << " (" << out.dimensions[static_cast<std::size_t>(a)]
+        << ") != sum of input sizes (" << along << ")";
+    return a;
+}
+
 std::vector<UInt> merge_output_dims(
         const std::vector<std::vector<UInt>> &input_dims,
         MergeMode mode, int axis) {
     NTA_CHECK(!input_dims.empty());
+    if (mode == MergeMode::Concat)
+        return concat_output_dims(input_dims, axis);
+
     const auto &d0 = input_dims[0];
     for (const auto &d : input_dims)
         NTA_CHECK(d == d0) << "All SDRs must have the same dimensions";
-
-    if (mode == MergeMode::Concat) {
-        const int a = positify_axis(axis, static_cast<int>(d0.size()));
-        NTA_CHECK(a < static_cast<int>(d0.size()))
-            << "Invalid axis " << axis << " for shapes with " << d0.size()
-            << " dimensions";
-        auto out = d0;
-        out[static_cast<std::size_t>(a)] =
-            d0[static_cast<std::size_t>(a)] * static_cast<UInt>(input_dims.size());
-        return out;
-    }
     if (mode == MergeMode::Stack) {
         std::vector<UInt> out;
         out.reserve(d0.size() + 1);
@@ -208,31 +265,34 @@ void SdrMerger::mode_nos(SDR &out) {
     out.setSparse(selected_);
 }
 
-/* c: concatenate along `axis`.  All inputs share one shape (checked), so
- * input j's coordinate on `axis` is offset by j * dims[axis].  Flat indices
- * are re-flattened against the OUT dimensions (row-major). */
+/* c: concatenate along `axis` (numpy.concatenate semantics). Input j's
+ * coordinate on `axis` is offset by the summed `axis`-sizes of inputs 0..j-1
+ * (== j * dims[axis] when all inputs share one shape). Every input is
+ * un-flattened with ITS OWN row-major strides and re-flattened against the
+ * OUT dimensions. Shapes are validated by check_concat_shapes in merge().
+ * Deterministic: no RNG, output depends only on the inputs and their order. */
 void SdrMerger::mode_concat(const std::vector<const SDR *> &inputs, int axis,
                             SDR &out) {
-    const auto &in_dims = inputs[0]->dimensions;
-    const int ndim = static_cast<int>(in_dims.size());
+    const int ndim = static_cast<int>(inputs[0]->dimensions.size());
     const int a = positify_axis(axis, ndim);
     NTA_CHECK(a < ndim) << "Invalid axis " << axis << " for shapes with "
                         << ndim << " dimensions";
     const auto &out_dims = out.dimensions;
 
-    /* Row-major strides for input and output shapes. */
+    /* Row-major strides of the output shape. */
     std::int64_t in_stride[16], out_stride[16];
     NTA_CHECK(ndim <= 16) << "SDR rank too large";
-    in_stride[ndim - 1] = out_stride[ndim - 1] = 1;
-    for (int d = ndim - 2; d >= 0; --d) {
-        in_stride[d]  = in_stride[d + 1]  * static_cast<std::int64_t>(in_dims[static_cast<std::size_t>(d + 1)]);
+    out_stride[ndim - 1] = 1;
+    for (int d = ndim - 2; d >= 0; --d)
         out_stride[d] = out_stride[d + 1] * static_cast<std::int64_t>(out_dims[static_cast<std::size_t>(d + 1)]);
-    }
 
     selected_.clear();
+    std::int64_t off_a = 0;                   // running offset along `axis`
     for (std::size_t j = 0; j < inputs.size(); ++j) {
-        const std::int64_t off_a =
-            static_cast<std::int64_t>(j) * static_cast<std::int64_t>(in_dims[static_cast<std::size_t>(a)]);
+        const auto &in_dims = inputs[j]->dimensions;
+        in_stride[ndim - 1] = 1;
+        for (int d = ndim - 2; d >= 0; --d)
+            in_stride[d] = in_stride[d + 1] * static_cast<std::int64_t>(in_dims[static_cast<std::size_t>(d + 1)]);
         for (UInt f : inputs[j]->getSparse()) {
             std::int64_t rem = static_cast<std::int64_t>(f), of = 0;
             for (int d = 0; d < ndim; ++d) {
@@ -243,6 +303,7 @@ void SdrMerger::mode_concat(const std::vector<const SDR *> &inputs, int axis,
             }
             selected_.push_back(static_cast<UInt>(of));
         }
+        off_a += static_cast<std::int64_t>(in_dims[static_cast<std::size_t>(a)]);
     }
     std::sort(selected_.begin(), selected_.end());
     out.setSparse(selected_);
@@ -523,18 +584,26 @@ void SdrMerger::merge(const std::vector<const SDR *> &inputs, MergeMode mode,
     NTA_CHECK(!inputs.empty()) << "sdr_merge needs at least one input";
 
     /* Python: `if len(inputs) == 1: return inputs[0]` -- the runtime
-     * short-circuits this before calling; copy for API completeness. */
+     * short-circuits this before calling; copy for API completeness.
+     * The bits are copied into scratch first: handing getSparse() straight
+     * to setSparse() binds the non-const overload, which SWAPS the vectors
+     * and would leave the (const) input empty. */
     if (inputs.size() == 1) {
         NTA_CHECK(inputs[0]->size == out.size)
             << "single-input merge: size mismatch";
-        out.setSparse(inputs[0]->getSparse());   // template overload: copy
+        const auto &src = inputs[0]->getSparse();
+        selected_.assign(src.begin(), src.end());
+        out.setSparse(selected_);
         return;
     }
 
-    check_shapes(inputs);
-
     /* Concat/stack never look at counts. */
-    if (mode == MergeMode::Concat) { mode_concat(inputs, axis, out); return; }
+    if (mode == MergeMode::Concat) {
+        check_concat_shapes(inputs, axis, out);
+        mode_concat(inputs, axis, out);
+        return;
+    }
+    check_shapes(inputs);
     if (mode == MergeMode::Stack)  { mode_stack(inputs, out);        return; }
 
     const std::int64_t total_bits = accumulate_counts(inputs);

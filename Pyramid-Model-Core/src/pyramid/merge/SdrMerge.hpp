@@ -83,7 +83,10 @@ void sdr_max_pool_into(const htm::SDR &in, int ratio, int axis, htm::SDR &out,
                        std::vector<htm::UInt> &scratch);
 
 /* Output shape of `sdr_merge` for a given mode (ports concat_shapes and the
- * stack shape rule; identity for all in-place modes). Validates like Python. */
+ * stack shape rule; identity for all in-place modes). Validates like Python:
+ * Concat follows numpy.concatenate -- same rank, equal sizes on every axis
+ * but `axis`, output size on `axis` = SUM of the inputs' sizes there (inputs
+ * may differ in length). Every other mode requires identical input dims. */
 std::vector<htm::UInt> merge_output_dims(
     const std::vector<std::vector<htm::UInt>> &input_dims,
     MergeMode mode, int axis);

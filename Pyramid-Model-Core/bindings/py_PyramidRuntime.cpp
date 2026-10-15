@@ -185,6 +185,8 @@ SpSpec parse_sp(const py::dict &d) {
     s.boostStrength = d["boostStrength"].cast<double>();
     s.localAreaDensity = d["localAreaDensity"].cast<double>();
     s.wrapAround = d["wrapAround"].cast<bool>();
+    s.dutyCyclePeriod = get_or<std::int64_t>(d, "dutyCyclePeriod", 1000);
+    s.minPctOverlapDutyCycle = get_or<double>(d, "minPctOverlapDutyCycle", 0.001);
     return s;
 }
 
@@ -270,6 +272,7 @@ PyramidSpec parse_spec(const py::dict &d) {
     s.flags.memory_inertia = get_or<std::int64_t>(f, "memory_inertia", 5);
     s.flags.lateral_exchange = get_or<bool>(f, "lateral_exchange", false);
     s.flags.squeeze_skip = get_or<bool>(f, "squeeze_skip", false);
+    s.flags.record_signals = get_or<bool>(f, "record_signals", false);
 
     for (auto e : d["encoders"].cast<py::list>())
         s.encoders.push_back(parse_feature(e.cast<py::dict>()));
@@ -499,6 +502,14 @@ public:
             node["activity"] = py::array_t<std::int64_t>(
                 static_cast<py::ssize_t>(r.activity.size()),
                 r.activity.data());
+            node["pred_columns"] = py::array_t<std::uint16_t>(
+                static_cast<py::ssize_t>(r.pred_columns.size()), r.pred_columns.data());
+            node["pred_hits"] = py::array_t<std::uint16_t>(
+                static_cast<py::ssize_t>(r.pred_hits.size()), r.pred_hits.data());
+            node["pred_cells"] = py::array_t<std::uint16_t>(
+                static_cast<py::ssize_t>(r.pred_cells.size()), r.pred_cells.data());
+            node["sp_overlap"] = py::array_t<float>(
+                static_cast<py::ssize_t>(r.sp_overlap.size()), r.sp_overlap.data());
             out[py::str(name)] = node;
         }
         return out;

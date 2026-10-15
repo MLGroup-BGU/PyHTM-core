@@ -1,3 +1,8 @@
+#include <string>
+#include <cctype>
+#include <cstdlib>
+#include <cstdint>
+#include <limits>
 /* ---------------------------------------------------------------------------
  * Pyramid-Model-Core :: runtime/HtmNode.cpp
  * See HtmNode.hpp for the contract; blocks cite the Python they port.
@@ -41,13 +46,16 @@ HtmNode::HtmNode(const NodeSpec &spec) : spec_(spec) {
     cellDims_ = columnDims_;
     cellDims_.push_back(static_cast<UInt>(spec_.tm.cellsPerColumn));
 
-    /* Runtime output dims: the Python pipeline squeezes the size-1 leading
-     * axis (input_predictive) BEFORE post_forward, then pools axis 0 and
-     * flattens.  We mirror that on the ACTUAL SDR dims. */
+    /* The node OUTPUT is its active COLUMNS (Stage 2): one bit per column,
+     * columnDims_ wide (2048 bits, 40 on). The TM's cells stay internal --
+     * they hold the node's own temporal context and its anomaly score, and
+     * the parent builds its own context from the sequence of these columns.
+     * Runtime output dims: squeeze the size-1 leading axis
+     * (input_predictive), then pool axis 0 and flatten, on the ACTUAL dims. */
     std::vector<UInt> squeezed;
-    for (std::size_t i = 0; i < cellDims_.size(); ++i) {
-        if (spec_.input_predictive && i == 0 && cellDims_[i] == 1u) continue;
-        squeezed.push_back(cellDims_[i]);
+    for (std::size_t i = 0; i < columnDims_.size(); ++i) {
+        if (spec_.input_predictive && i == 0 && columnDims_[i] == 1u) continue;
+        squeezed.push_back(columnDims_[i]);
     }
     squeezedDims_ = squeezed;
 
@@ -66,10 +74,11 @@ HtmNode::HtmNode(const NodeSpec &spec) : spec_(spec) {
     /* Fixed-dims scratch. */
     activeColumns_.initialize(columnDims_);
     predictiveCells_.initialize(cellDims_);
-    activeCells_.initialize(cellDims_);
-    resTmp1_.initialize(cellDims_);
-    resTmp2_.initialize(cellDims_);
-    resOut_.initialize(cellDims_);
+    predColumns_.initialize(columnDims_);
+    outCols_.initialize(columnDims_);
+    resTmp1_.initialize(columnDims_);
+    resTmp2_.initialize(columnDims_);
+    resOut_.initialize(columnDims_);
     poolTmp_.initialize(pooled);
     outFinal_.initialize(outDims_);
     predFinal_.initialize(outDims_);
@@ -78,10 +87,10 @@ HtmNode::HtmNode(const NodeSpec &spec) : spec_(spec) {
 void HtmNode::init_sp() {
     if (!spec_.has_sp) return;
     const SpSpec &p = spec_.sp;
-    /* Argument values Python does not pass keep the BINDING's defaults
-     * (numActiveColumnsPerInhArea=0, minPctOverlapDutyCycle=0.001,
-     * dutyCyclePeriod=1000, spVerbosity=0) -- verified against
-     * py_SpatialPooler.cpp. */
+    /* numActiveColumnsPerInhArea=0 (localAreaDensity is used) and
+     * spVerbosity=0 keep the binding defaults. minPctOverlapDutyCycle and
+     * dutyCyclePeriod come from the config (SpSpec; defaults 0.001 / 1000,
+     * the binding defaults). */
     sp_ = std::make_unique<htm::SpatialPooler>(
         spec_.input_dims, spec_.has_sp && spec_.input_predictive
                               ? columnDims_          // [1, *cols]
@@ -94,8 +103,8 @@ void HtmNode::init_sp() {
         static_cast<htm::Real>(p.synPermInactiveDec),
         static_cast<htm::Real>(p.synPermActiveInc),
         static_cast<htm::Real>(p.synPermConnected),
-        /*minPctOverlapDutyCycles=*/0.001f,
-        /*dutyCyclePeriod=*/1000u,
+        static_cast<htm::Real>(p.minPctOverlapDutyCycle),
+        static_cast<UInt>(p.dutyCyclePeriod),
         static_cast<htm::Real>(p.boostStrength),
         static_cast<htm::Int>(spec_.seed),
         /*spVerbosity=*/0u, p.wrapAround);
@@ -143,27 +152,29 @@ void HtmNode::post_process(const SDR &in, SDR &out) {
 }
 
 void HtmNode::residual_into(SDR &out) {
-    /* HTMModule._residual, given activeCells_ / predictiveCells_.
-     * strength <= 0 -> full active signal (fresh copy). */
+    /* RTM residual in COLUMN space (Stage 2 placeholder until the residual
+     * is redesigned): the surprised columns = active columns that were not
+     * predicted (outCols_ minus predColumns_). strength <= 0 -> every
+     * active column (fresh copy). */
     if (spec_.residual_strength <= 0.0) {
-        bits_.assign(activeCells_.getSparse().begin(),
-                     activeCells_.getSparse().end());
+        bits_.assign(outCols_.getSparse().begin(),
+                     outCols_.getSparse().end());
         out.setSparse(bits_);
         return;
     }
 
     if (spec_.residual_mode == 2) {     // 'xor'
-        resTmp1_.subtract(activeCells_, predictiveCells_);
-        resTmp2_.subtract(predictiveCells_, activeCells_);
+        resTmp1_.subtract(outCols_, predColumns_);
+        resTmp2_.subtract(predColumns_, outCols_);
         out.set_union(resTmp1_, resTmp2_);
     } else {                            // 'subtract'
-        out.subtract(activeCells_, predictiveCells_);
+        out.subtract(outCols_, predColumns_);
     }
 
     if (spec_.residual_strength >= 1.0) return;
 
     /* 0 < strength < 1: keep a uniform random (1-strength) fraction of the
-     * predicted-and-active cells on top of the surprise.
+     * predicted-and-active columns on top of the surprise.
      *
      * DOCUMENTED DEVIATION: Python samples this subset from numpy's GLOBAL
      * RandomState; under the thread hive, per-model draw ORDER depends on
@@ -171,7 +182,7 @@ void HtmNode::residual_into(SDR &out) {
      * Here each node owns a PCG64 seeded from its model seed -- fully
      * deterministic.  Deterministic strengths (<=0, >=1) are bit-identical
      * to Python on both sides. */
-    resTmp1_.intersection(activeCells_, predictiveCells_);
+    resTmp1_.intersection(outCols_, predColumns_);
     const auto &expected = resTmp1_.getSparse();
     const std::int64_t n_keep = static_cast<std::int64_t>(
         static_cast<double>(expected.size()) *
@@ -209,12 +220,21 @@ void HtmNode::step(const SDR &input) {
 
     /* --- Spatial Pooler (or encoder pass-through) --- */
     const SDR *activeColumns;
+    float spOverlap = std::numeric_limits<float>::quiet_NaN();
     if (sp_) {
-        sp_->compute(input, learn, activeColumns_);
+        /* compute() returns every column's raw overlap with this input. */
+        const auto overlaps = sp_->compute(input, learn, activeColumns_);
         activeColumns = &activeColumns_;
+        const auto &win = activeColumns_.getSparse();
+        if (recordSignals_ && !win.empty()) {
+            double sum = 0.0;
+            for (const auto c : win) sum += static_cast<double>(overlaps[c]);
+            spOverlap = static_cast<float>(sum / static_cast<double>(win.size()));
+        }
     } else {
         activeColumns = &input;
     }
+    if (recordSignals_) spOverlapHist_.push_back(spOverlap);
     activityHist_.push_back(
         static_cast<std::int64_t>(activeColumns->getSparse().size()));
 
@@ -224,40 +244,56 @@ void HtmNode::step(const SDR &input) {
     {
         SDR p = tm_->getPredictiveCells();
         predictiveCells_.setSDR(p);
+        predColumns_.reshape(columnDims_);
+        const SDR pc = tm_->cellsToColumns(predictiveCells_);
+        predColumns_.setSDR(pc);
+        /* signals: how broad the prediction was, and how much of it hit */
+        if (recordSignals_) {
+        const auto &pa = predColumns_.getSparse();
+        const auto &ac = activeColumns->getSparse();
+        std::size_t i = 0, j = 0, hits = 0;
+        while (i < pa.size() && j < ac.size()) {
+            if (pa[i] < ac[j]) ++i; else if (ac[j] < pa[i]) ++j; else { ++hits; ++i; ++j; }
+        }
+        auto clip16 = [](std::size_t v) {
+            return static_cast<std::uint16_t>(std::min<std::size_t>(v, 65535u)); };
+        predColsHist_.push_back(clip16(pa.size()));
+        predHitsHist_.push_back(clip16(hits));
+        predCellsHist_.push_back(clip16(predictiveCells_.getSparse().size()));
+        }
     }
     if (spec_.anomaly_score) {
-        const SDR predictiveColumns = tm_->cellsToColumns(predictiveCells_);
         const double a = static_cast<double>(
-            htm::computeRawAnomalyScore(*activeColumns, predictiveColumns));
+            htm::computeRawAnomalyScore(*activeColumns, predColumns_));
         anomalyHist_.push_back(a);
         lastAnomaly_ = a;
     }
     tm_->activateCells(*activeColumns, learn);
 
-    /* --- Output: active cells, or the RTM residual --- */
-    activeCells_.reshape(cellDims_);
-    tm_->getActiveCells(activeCells_);
+    /* --- Output: the active columns, or (RTM) the surprised columns --- */
+    outCols_.reshape(columnDims_);     // may hold squeezed dims from last step
+    outCols_.setSDR(*activeColumns);
 
     SDR *rawOut;
     if (spec_.anomaly_detector) {
-        resOut_.reshape(cellDims_);   // may hold squeezed dims from last step
+        resOut_.reshape(columnDims_);
         residual_into(resOut_);
         rawOut = &resOut_;
     } else {
-        rawOut = &activeCells_;
+        rawOut = &outCols_;
     }
 
     /* --- squeeze (input_predictive) + post_forward on each returned SDR --- */
     if (spec_.input_predictive) {
         /* size-1 leading axis drop: flat indices unchanged, dims narrowed */
         rawOut->reshape(squeezedDims_);
-        predictiveCells_.reshape(squeezedDims_);
+        predColumns_.reshape(squeezedDims_);
     }
     post_process(*rawOut, outFinal_);
     if (spec_.return_predictive)
-        post_process(predictiveCells_, predFinal_);
+        post_process(predColumns_, predFinal_);
     if (spec_.input_predictive)
-        predictiveCells_.reshape(cellDims_);   // restore for next step
+        predColumns_.reshape(columnDims_);    // restore for next step
 
     ++iteration_;
 }
@@ -285,7 +321,7 @@ std::string HtmNode::summary() const {
 
     std::vector<std::int64_t> in_d(spec_.input_dims.begin(),
                                    spec_.input_dims.end());
-    std::vector<std::int64_t> out_d(cellDims_.begin(), cellDims_.end());
+    std::vector<std::int64_t> out_d(columnDims_.begin(), columnDims_.end());
     if (spec_.max_pool > 1) out_d[0] /= spec_.max_pool;
     if (spec_.flatten) {
         std::int64_t p = 1;
@@ -307,6 +343,10 @@ std::string HtmNode::summary() const {
 void HtmNode::reserve_history(std::size_t n) {
     if (spec_.anomaly_score) anomalyHist_.reserve(n);
     activityHist_.reserve(n);
+    if (recordSignals_) {
+        predColsHist_.reserve(n); predHitsHist_.reserve(n); predCellsHist_.reserve(n);
+        spOverlapHist_.reserve(n);
+    }
 }
 
 } // namespace pyramid

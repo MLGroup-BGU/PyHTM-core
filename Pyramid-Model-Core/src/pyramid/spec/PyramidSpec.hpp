@@ -5,7 +5,7 @@
  * and run, fully resolved.  The Python side (htm_source/pipeline/
  * pyramid_spec.py) assembles this from the YAML configs using the SAME code
  * paths the Python pyramid uses today (get_layer_config / get_node_config /
- * potentialRadius rounding / feature weights & banker's rounding / final
+ * potentialRadius rounding / banker's rounding (feature weights are ignored) / final
  * feature and model seeds), so parameter resolution is identical by
  * construction.  The C++ side receives only final numbers; the only values
  * derived here are the SAMPLE-dependent encoder parameters (computed during
@@ -42,6 +42,11 @@ struct SpSpec {
     double boostStrength = 0.0;
     double localAreaDensity = 0.0;
     bool wrapAround = true;
+    /* Duty-cycle settings (homeostasis bookkeeping of the SP). Taken from
+     * the config; the defaults are the htm.core binding defaults, so a spec
+     * without these keys behaves exactly as before. */
+    std::int64_t dutyCyclePeriod = 1000;
+    double minPctOverlapDutyCycle = 0.001;
 };
 
 /* Fully-resolved TemporalMemory parameters for one node. */
@@ -104,6 +109,7 @@ struct RunFlags {
     std::int64_t memory_inertia = 5;
     bool lateral_exchange = false;
     bool squeeze_skip = false;            // FeatureSUSqueezeSkipPyramid.run
+    bool record_signals = false;          // general.record_signals (per-node signals)
 };
 
 /* Where the records come from. */

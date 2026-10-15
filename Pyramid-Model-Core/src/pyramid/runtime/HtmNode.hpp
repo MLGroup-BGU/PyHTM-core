@@ -9,17 +9,29 @@
  * Python HTMModule already runs) plus HTMModule's own bookkeeping:
  *
  *     learning_hook -> [SP.compute] -> activateDendrites ->
- *     getPredictiveCells -> (cellsToColumns -> computeRawAnomalyScore) ->
- *     activateCells -> getActiveCells / residual -> squeeze ->
- *     max_pool -> flatten -> histories -> iteration++
+ *     getPredictiveCells -> cellsToColumns -> computeRawAnomalyScore ->
+ *     activateCells -> output (active COLUMNS, or the surprised columns
+ *     under RTM) -> squeeze -> max_pool -> flatten -> histories -> iteration++
+ *
+ * OUTPUT (Stage 2): the node emits its active columns -- columnDimensions
+ * bits (2048), localAreaDensity of them on (40, i.e. 2%). This is the SP's
+ * learned code of "which pattern of this node's features is present now".
+ * The TM's cells (the node's temporal context) stay inside the node: they
+ * drive its anomaly score, and the parent learns its own temporal context
+ * from the sequence of these columns. Every node therefore sends the same
+ * number of bits whether or not it is surprised (a bursting column is one
+ * bit, not cellsPerColumn bits), and the output width does not depend on
+ * the TM size. htm.core's TMRegion offers the same column-level output
+ * (`orColumnOutputs`); NuPIC's hierarchy example sent cells instead.
  *
  * ORDER IS THE ALGORITHM: dendrites predict from the t-1 cells; the anomaly
  * compares those predictions with THIS step's columns; only then are cells
  * activated.  Identical to both Python paths (proven by seam test T6 for
  * stepSpTm, and end-to-end by the pyramid equivalence harness).
  *
- * The fractional residual strength (0 < s < 1) keeps a uniform random
- * (1-s) fraction of the predicted-and-active cells on top of the surprise.
+ * RTM residual (anomaly_detector): the surprised columns (active, not
+ * predicted). The fractional strength (0 < s < 1) keeps a uniform random
+ * (1-s) fraction of the predicted-and-active columns on top of the surprise.
  * Python draws that subset from numpy's GLOBAL RandomState -- under the
  * thread hive the draw order across models is scheduler-dependent, so the
  * Python results there were never reproducible run-to-run.  Here each node
@@ -88,6 +100,14 @@ public:
     /* Per-step histories (returned to Python at the end of the run). */
     const std::vector<double> &anomaly_history() const { return anomalyHist_; }
     const std::vector<std::int64_t> &activity_history() const { return activityHist_; }
+    /* Per-step signals for offline anomaly-function studies (counts only):
+     * predicted columns, predicted-and-active columns, predictive cells, and
+     * the mean SP overlap of the winning columns (NaN without an SP). */
+    const std::vector<std::uint16_t> &pred_columns_history() const { return predColsHist_; }
+    const std::vector<std::uint16_t> &pred_hits_history() const { return predHitsHist_; }
+    const std::vector<std::uint16_t> &pred_cells_history() const { return predCellsHist_; }
+    const std::vector<float> &sp_overlap_history() const { return spOverlapHist_; }
+    void set_record_signals(bool on) { recordSignals_ = on; }
 
     /* HTMModule.summary() -- the model_summary() line for this node. */
     std::string summary() const;
@@ -102,7 +122,7 @@ private:
 
     std::vector<htm::UInt> columnDims_;    // HTMModule.column_dim
     std::vector<htm::UInt> cellDims_;      // (*column_dim, cellsPerColumn)
-    std::vector<htm::UInt> squeezedDims_;  // cellDims_ minus the leading 1
+    std::vector<htm::UInt> squeezedDims_;  // columnDims_ minus the leading 1
     std::vector<htm::UInt> outDims_;       // post max_pool/flatten (+pred axis)
 
     std::int64_t iteration_ = 0;
@@ -111,13 +131,20 @@ private:
 
     std::vector<double> anomalyHist_;
     std::vector<std::int64_t> activityHist_;
+    std::vector<std::uint16_t> predColsHist_, predHitsHist_, predCellsHist_;
+    std::vector<float> spOverlapHist_;
+    /* Signals are recorded only when the config asks for them
+     * (general.record_signals); off by default, so a run spends no memory on
+     * them unless switched on. Set by the runtime right after construction. */
+    bool recordSignals_ = false;
 
     /* per-step scratch (fixed dims per node) */
     htm::SDR activeColumns_;
-    htm::SDR predictiveCells_;
-    htm::SDR activeCells_;
+    htm::SDR predictiveCells_;            // TM predictions for this step (cells)
+    htm::SDR predColumns_;                // ... reduced to columns
+    htm::SDR outCols_;                    // active columns = the node output
     htm::SDR resTmp1_, resTmp2_;
-    htm::SDR resOut_;                     // AD residual output (escapes upward)
+    htm::SDR resOut_;                     // AD residual output (columns)
     htm::SDR outFinal_, predFinal_;
     htm::SDR poolTmp_;                    // pre-flatten pooled scratch
     std::vector<htm::UInt> bits_;         // shared index scratch
