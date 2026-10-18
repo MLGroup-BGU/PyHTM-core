@@ -9,7 +9,7 @@ three sources with identical semantics:
 
 | Source | `total_rows` | Notes |
 |--------|--------------|-------|
-| `pd.DataFrame` | known | sliced up-front with `.iloc[start:stop:step]` |
+| `pd.DataFrame` | known | sliced up-front with `.iloc[start:stop]` |
 | Parquet (`.parquet`/`.pq`) | known (metadata) | pyarrow `iter_batches`, global-row slicing per batch |
 | CSV (anything else) | unknown (`None`) | pandas `chunksize` reader, global-row slicing per batch |
 

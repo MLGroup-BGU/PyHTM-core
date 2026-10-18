@@ -1,33 +1,26 @@
 # 🔺 Pyramid-Model-Core
 
-The PyHTM pyramid runtime in C++: encoding, feature merges, SP/TM steps
-across all layers, the run-loop extensions (residual / broadcast /
-recurrent / anomaly-boost / long-term memory / lateral exchange /
-squeeze-skip), data ingestion, and threading — executing under a single
-GIL release on a pinned worker pool.
+The PyHTM pyramid runtime in C++: encoding, the concatenation of each node's
+inputs, SP/TM steps across all layers, data ingestion, and threading —
+executing under a single GIL release on a pinned worker pool.
 
 ## 🤝 Division of responsibilities
 
 | Side | Responsibility |
 |------|----------------|
-| **Python** (`htm_source.pipeline.pyramid_spec`) | Resolves every configuration-derived value (per-layer configs, timescale overrides, `potentialRadius` rounding, seeds, dims chaining, per-node summary strings) and hands the engine a fully-resolved spec dict. |
-| **C++** (this module) | Computes every data-derived value (deduced RDSE resolutions, adaptive quantile tables, dual-scalar fits), builds all nodes in parallel, and streams the dataset through the pyramid. |
-
-Result equivalence with the PyHTM Python implementation
-(`htm_source.model.htm_pyramid_python`) is exact — anomaly and activity
-arrays compare element-for-element across the flag × encoder matrix. See
+| **Python** (`htm_source.pipeline.pyramid_spec`) | Resolves every configuration-derived value (per-layer configs, timescale overrides, `predictedSegmentDecrement`, seeds, dims chaining, per-node summary strings) and hands the engine a fully-resolved spec dict. |
+| **C++** (this module) | Computes every data-derived value (deduced RDSE resolutions), builds all nodes in parallel, and streams the dataset through the pyramid. Holds what the pyramid fixes by design: concatenation as the only merge, and the fixed Spatial Pooler / Temporal Memory values (`HtmNode`). |
 
 ## 📁 Layout
 
 | Path | Contents |
 |------|----------|
-| `src/pyramid/rng/` | numpy-equivalent RNG stack: `SeedSequence`, PCG64, `Generator.choice(replace=False, p=…)` |
 | `src/pyramid/math/` | numpy-equivalent math: `pairwise_sum`, `cumsum`, `searchsorted`, `linspace`, `quantile(median_unbiased)`, `percentile(linear)` |
-| `src/pyramid/merge/` | All 14 SDR merge modes + `max_pool`, allocation-free steady state |
-| `src/pyramid/encoders/` | RDSE / adaptive / hybrid / dual-scalar / categorical / date encoders + sample-derived parameter builders |
+| `src/pyramid/merge/` | `SdrConcat`: concatenation along axis 0, the pyramid's one merge |
+| `src/pyramid/encoders/` | RDSE / categorical (RDSE category mode) / date encoders, chosen by the feature's type, + the deduced RDSE resolution |
 | `src/pyramid/spec/` | `PyramidSpec` — the parsed spec structs |
 | `src/pyramid/data/` | `RecordSource` interface + native `CsvSource` |
-| `src/pyramid/runtime/` | `HtmNode` (SP+TM step; the node output is its active columns, or the surprised columns under RTM; squeeze, max-pool) + `PyramidRuntime` (per-record loop and the extension chain) |
+| `src/pyramid/runtime/` | `HtmNode` (SP+TM step; the node output is its active columns) + `PyramidRuntime` (per-record loop) |
 | `src/pyramid/threading/` | `WorkerPool`: pinned ownership, weighted-LPT partition, layer barrier |
 | `bindings/` | pybind11 module `htm.bindings.pyramid_engine` (`PyramidEngine`, `probe_encoder_dims`) + `PyReaderSource` |
 | `py/pyramid_support/` | `htm.pyramid.DatasetReader` — the batched Python feeder |
@@ -57,8 +50,8 @@ dependency.
 
 ## 🚀 Direct use
 
-Runners use the `htm_source.model` classes (thin delegates with the
-original signatures) and do not touch this module directly. Direct API:
+Runners use `htm_source.model.htm_pyramid.HTMPyramid` (a thin delegate) and do not
+touch this module directly. Direct API:
 
 ```python
 from htm.bindings.pyramid_engine import PyramidEngine
@@ -80,9 +73,7 @@ scores = eng.results()        # {node: {'anomaly': f64[], 'activity': i64[]}}
   records) and the optional progress callback.
 * Workers are pinned: each node is owned by exactly one worker for the
   whole run (weighted-LPT partition per layer, cumulative loads carried
-  across layers — the arithmetic of
-  `htm_source.utils.general.balanced_partition_weighted`), so worker
-  count cannot affect results. A layer barrier orders inter-layer
+  across layers), so worker count cannot affect results. A layer barrier orders inter-layer
   hand-offs.
 * Thread→core pinning: on Linux and Windows, worker *i* of **both** pools
   is pinned 1:1 to the *i*-th process-allowed core (taskset/cgroup/SLURM
@@ -90,8 +81,8 @@ scores = eng.results()        # {node: {'anomaly': f64[], 'activity': i64[]}}
   memory first-touched by the build pool stays local to the run pool's
   owner of the same nodes (NUMA). When workers exceed allowed cores, or
   on macOS (no strict affinity API), the OS scheduler is used.
-* Cross-record pipeline: with more than one worker (and no
-  `lateral_exchange`), scheduling is dependency-released instead of
+* Cross-record pipeline: with more than one worker, scheduling is
+  dependency-released instead of
   layer-barriered — a node runs record *t* the moment its producers
   finished *t* and its ring slot is free, so up to `K` records are in
   flight across layers. The spec key `pipeline_depth` selects `K`:
@@ -127,45 +118,43 @@ order. Omitting a parameter never breaks anything:
 
 `multiprocess` illustrates the pattern end to end:
 `get_or<bool>(d, "multiprocess", true)`. `false` forces a single worker
-thread, `true` sizes the pool from the environment. The PyHTM surface
-also accepts `multithreading` as the preferred alias for the same switch.
+thread, `true` sizes the pool from the environment. `HTMPyramid` exposes it
+as `multithread` (the model config's `general.multi_threading`).
 
 ## 🔗 What enters and leaves a node
 
-- **Into an L0 node** (`feature_merge_mode: c`): the feature encodings are concatenated,
-  one slice per feature, in the node's feature order (numpy.concatenate rule: inputs may
-  differ in length along the concat axis). Nothing is sampled or overlaid, so equal values
-  always give an identical node input. Every other merge mode overlays its inputs on one
-  index space and therefore requires identical input dimensions.
-- **Into a parent node** (`htm_merge_mode: c`): the children's outputs concatenated, one
+- **Into an L0 node**: the feature encodings are concatenated, one slice per feature, in
+  the node's feature order (numpy.concatenate rule: inputs may differ in length along the
+  concat axis). Nothing is sampled or overlaid, so equal values always give an identical
+  node input.
+- **Into a parent node**: the children's outputs concatenated, one
   2048-bit slice per child in connection order (a single child is copied). As NuPIC's Network
   API and htm.core's "fanin" links do, each source keeps its own portion of the input buffer.
 - **Out of every node**: its active columns (`columnDimensions` bits, `localAreaDensity`
-  of them on), or under RTM (`anomaly_detector`) the surprised columns (active, not
-  predicted). The TM's cells stay internal: they hold the node's temporal context and
+  of them on). The TM's cells stay internal: they hold the node's temporal context and
   produce its anomaly score. Every node therefore sends the same number of bits whether
   it is surprised or not, and the output width does not depend on the TM size. htm.core's
   region API offers the same column-level output (`TMRegion`, `orColumnOutputs`).
-- **Per-node signals (optional)**: with `record_signals` in the run flags (the model config's
+- **Per-node signals (optional)**: with `record_signals` in the spec (the model config's
   `general.record_signals`), every node
   also records per record its predicted columns, predicted-and-active columns, predictive cells and
   the mean SP overlap of its winning columns (10 bytes per node and record, handed to Python once
   at the end of the run, like the scores). Off unless the config asks for it.
-- **SP settings that come from the config** include `dutyCyclePeriod` and
-  `minPctOverlapDutyCycle` (defaults 1000 / 0.001 when absent). With
-  `stimulusThreshold: 0` every node activates exactly `localAreaDensity` of its columns on
-  every record; ties at the cut-off go to the higher column index, as in NuPIC and
-  htm.core, which keeps the same input mapped to the same columns.
+- **Fixed SP / TM values** (`HtmNode`, NuPIC's values for NAB): the potential pool covers
+  the whole input (`potentialRadius` = input width), global inhibition, no boosting,
+  `stimulusThreshold` 0, wrap-around, `minPctOverlapDutyCycle` 0.001, `dutyCyclePeriod`
+  1000, and a connected permanence of 0.5. With `stimulusThreshold` 0 every node activates
+  exactly `localAreaDensity` of its columns on every record; ties at the cut-off go to the
+  higher column index, as in NuPIC and htm.core, which keeps the same input mapped to the
+  same columns.
 
 ## 📌 Behavioral notes
 
 | Item | Detail |
 |------|--------|
-| Fractional anomaly-boost residual | Sampled from a per-node PCG64 stream (seeded, deterministic). Boost copy counts use banker's rounding. |
-| `use_predictive` + `lateral_exchange` / `broadcast_head` | Rejected at build time with a "not a runnable combination" error. |
 | Timescale suffixes | A node name without a timescale suffix resolves to the `'short'` parameter set when one exists in the `timescales` block (`get_node_config` semantics). |
-| Per-layer `max_pool` | Unpacked per layer only when passed as a **tuple** (`isinstance(..., tuple)` in the build loop). |
-| Feature names | Must not contain `feature_join_str` (default `'_'`). |
+| Seed 0 | `general.seed: 0` gives every node and encoder seed 0, which htm.core treats as "a new random seed": such a run is not reproducible. Any other seed is. |
+| Too little data to deduce a resolution | A numeric feature without a `resolution` needs at least 2 training rows; with fewer the build stops with a message naming the feature. |
 | Datetime features | Require all five date-encoder keys (`season`, `dayOfWeek`, `weekend`, `holiday`, `timeOfDay`) plus a `format` parameter. |
 | `std::exp/log/pow` | Scalar libm paths. On AVX-512 hosts a ≤ 1 ULP difference from numpy is possible in these calls. FMA contraction is disabled project-wide under march levels (`-ffp-contract=off`), keeping numeric output identical across every `HTM_MARCH` level. |
 | Library SIMD | The `htm_core` library compiles at `x86-64-v3` max. On v4 hosts its segment-histogram hot loop (`Connections::computeActivity`) uses an AVX-512 (`vpconflictd` + gather/scatter) integer kernel compiled per-file — order-independent integer addition, bit-identical to the scalar loop, measured ×1.24 on end-to-end run for 2048-column models (single worker). |

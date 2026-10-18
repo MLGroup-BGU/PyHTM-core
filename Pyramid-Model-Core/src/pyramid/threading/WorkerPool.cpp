@@ -73,7 +73,7 @@ inline bool pin_current_thread(int core) {
 }
 }  // namespace
 
-/* ------------- general.balanced_partition_weighted (LPT) ----------------- */
+/* ------------- balanced_partition_weighted (LPT) ------------------------- */
 std::vector<std::vector<std::size_t>> balanced_partition_weighted(
         std::size_t n_items, const std::vector<double> &weights,
         std::size_t n_buckets, std::vector<double> &cumulative) {

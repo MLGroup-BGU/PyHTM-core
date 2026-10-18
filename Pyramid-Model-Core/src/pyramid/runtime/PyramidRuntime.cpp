@@ -1,8 +1,7 @@
 /* ---------------------------------------------------------------------------
  * Pyramid-Model-Core :: runtime/PyramidRuntime.cpp
  *
- * Implementation.  Blocks cite the Python they port (htm_pyramid.py /
- * feature_su_pyramid.py / data_streamer.py semantics).
+ * Implementation; see PyramidRuntime.hpp.
  * ------------------------------------------------------------------------ */
 #include "PyramidRuntime.hpp"
 #include "../util/StageLog.hpp"
@@ -21,15 +20,6 @@ using htm::UInt;
 
 PyramidRuntime::PyramidRuntime(PyramidSpec spec) : spec_(std::move(spec)) {
     nLayers_ = spec_.layers.size();
-
-    /* Per-node seeding key, from the node NAME so that the same structural
-     * position hashes identically across timescales (SeedMix.hpp). */
-    nodeKey_.resize(nLayers_);
-    for (std::size_t li = 0; li < nLayers_; ++li) {
-        nodeKey_[li].resize(spec_.layers[li].size());
-        for (std::size_t p = 0; p < spec_.layers[li].size(); ++p)
-            nodeKey_[li][p] = node_key_from_name(spec_.layers[li][p], li, p);
-    }
     NTA_CHECK(nLayers_ >= 1) << "pyramid needs at least one layer";
     const auto &last = spec_.layers[nLayers_ - 1];
     NTA_CHECK(!last.empty()) << "empty head layer";
@@ -114,7 +104,7 @@ void PyramidRuntime::build_nodes() {
             NTA_CHECK(it != spec_.nodes.end())
                 << "node `" << name << "` missing from spec.nodes";
             auto node = std::make_unique<HtmNode>(it->second);
-            node->set_record_signals(spec_.flags.record_signals);
+            node->set_record_signals(spec_.record_signals);
             nodePos_[name] = {li, layers_[li].size()};
             layers_[li].push_back(node.get());
             nodes_.emplace(name, std::move(node));
@@ -140,12 +130,10 @@ void PyramidRuntime::build_routing() {
         }
     }
 
-    /* Children / residual grandparents as positions. */
+    /* Children as positions in the layer below. */
     childPos_.resize(nLayers_);
-    resPos_.resize(nLayers_);
     for (std::size_t li = 1; li < nLayers_; ++li) {
         childPos_[li].resize(layers_[li].size());
-        resPos_[li].resize(layers_[li].size());
         for (std::size_t p = 0; p < layers_[li].size(); ++p) {
             const auto &parent = spec_.layers[li][p];
             auto cit = spec_.children.find(parent);
@@ -156,17 +144,6 @@ void PyramidRuntime::build_routing() {
                 NTA_CHECK(cp.layer + 1 == li)
                     << "`" << c << "` is not one layer below `" << parent << "`";
                 childPos_[li][p].push_back(cp.pos);
-
-                /* residual: for child in children -> for grandchild in
-                 * predecessors(child) -> if in residual_results (layer
-                 * li-2): membership by layer, like the Python dict check. */
-                auto git = spec_.children.find(c);
-                if (git == spec_.children.end()) continue;
-                for (const auto &g : git->second) {
-                    const Pos gp = nodePos_.at(g);
-                    if (li >= 2 && gp.layer == li - 2)
-                        resPos_[li][p].push_back(gp.pos);
-                }
             }
         }
     }
@@ -179,100 +156,35 @@ void PyramidRuntime::allocate_slots() {
         kv.second->set_input(&res.first->second);
     }
 
-    if (spec_.flags.lateral_exchange) {
-        lateralOffset_.assign(nLayers_, 0);
-        std::size_t off = 0;
-        for (std::size_t li = 0; li + 1 < nLayers_; ++li) {
-            lateralOffset_[li] = off;
-            off += layers_[li].size();
-        }
-        lateralSlots_.reserve(off);
-        for (std::size_t li = 0; li + 1 < nLayers_; ++li)
-            for (HtmNode *n : layers_[li])
-                lateralSlots_.emplace_back(n->output_dims());
-    }
-
-    if (spec_.flags.use_predictive) {
-        for (std::size_t li = 1; li < nLayers_; ++li)
-            for (std::size_t p = 0; p < layers_[li].size(); ++p) {
-                const auto &firstChild =
-                    layers_[li - 1][childPos_[li][p][0]];
-                const auto &cd = firstChild->output_dims();
-                const auto &name = spec_.layers[li][p];
-                mergedActiveSlots_.emplace(name, SDR(cd));
-                mergedPredSlots_.emplace(name, SDR(cd));
-            }
-    }
-
-    if (spec_.flags.squeeze_skip) {
-        for (std::size_t li = 1; li < nLayers_; ++li)
-            for (std::size_t p = 0; p < layers_[li].size(); ++p)
-                if (childPos_[li][p].size() > 1) {
-                    const auto &cd =
-                        layers_[li - 1][childPos_[li][p][0]]->output_dims();
-                    skipSlots_.emplace(spec_.layers[li][p], SDR(cd));
-                }
-    }
-
-    const auto &headIn = nodes_.at(headName_)->input_dims_ref();
-    headBufA_.initialize(headIn);
-    headBufB_.initialize(headIn);
-    memorySdr_.initialize(headIn);
-    memoryBuf_.initialize(headIn);
-    prevHeadSdr_.initialize(nodes_.at(headName_)->output_dims());
-
     outView_.resize(nLayers_);
     for (std::size_t li = 0; li < nLayers_; ++li)
-        outView_[li].assign(layers_[li].size(), {nullptr, nullptr});
+        outView_[li].assign(layers_[li].size(), nullptr);
 }
 
-void PyramidRuntime::validate_dims_and_flags() {
-    /* Python's sdr_merge over (active, predictive) TUPLES crashes inside
-     * lateral_exchange / broadcast_head; reject the combination with a
-     * clear message instead. */
-    if (spec_.flags.use_predictive) {
-        NTA_CHECK(!spec_.flags.lateral_exchange)
-            << "use_predictive + lateral_exchange is not a runnable "
-            << "combination (the Python pyramid crashes merging tuples)";
-        NTA_CHECK(!spec_.flags.broadcast_head)
-            << "use_predictive + broadcast_head is not a runnable "
-            << "combination (the Python pyramid crashes merging tuples)";
-    }
-
-    /* L0: plan-merged feature dims == spec input dims. */
+void PyramidRuntime::validate_dims() {
+    /* L0: concatenated feature dims == spec input dims. */
     for (std::size_t p = 0; p < layers_[0].size(); ++p) {
         std::vector<std::vector<UInt>> dims;
         for (std::size_t ei : planEnc_[p])
             dims.push_back(encoders_[ei]->dimensions());
         std::vector<UInt> merged =
-            (!spec_.merge.has_feature_mode || dims.size() == 1)
-                ? dims[0]
-                : merge_output_dims(dims, spec_.merge.feature_mode,
-                                    spec_.merge.concat_axis);
+            dims.size() == 1 ? dims[0] : concat_output_dims(dims);
         NTA_CHECK(merged == layers_[0][p]->input_dims_ref())
             << "L0 `" << spec_.layers[0][p]
-            << "`: plan-merged dims != spec input dims";
+            << "`: concatenated feature dims != spec input dims";
     }
 
-    /* Parents: merged children output dims == spec input dims. */
+    /* Parents: concatenated children output dims == spec input dims. */
     for (std::size_t li = 1; li < nLayers_; ++li)
         for (std::size_t p = 0; p < layers_[li].size(); ++p) {
             std::vector<std::vector<UInt>> dims;
             for (std::size_t cp : childPos_[li][p])
                 dims.push_back(layers_[li - 1][cp]->output_dims());
             std::vector<UInt> merged =
-                (dims.size() == 1 && !spec_.flags.use_predictive)
-                    ? dims[0]
-                    : merge_output_dims(dims, spec_.merge.htm_mode,
-                                        spec_.merge.concat_axis);
-            if (spec_.flags.use_predictive) {
-                std::vector<UInt> stacked = {2u};
-                stacked.insert(stacked.end(), merged.begin(), merged.end());
-                merged = stacked;
-            }
+                dims.size() == 1 ? dims[0] : concat_output_dims(dims);
             NTA_CHECK(merged == layers_[li][p]->input_dims_ref())
                 << "`" << spec_.layers[li][p]
-                << "`: merged child dims != spec input dims";
+                << "`: concatenated child dims != spec input dims";
         }
 }
 
@@ -290,7 +202,7 @@ void PyramidRuntime::build(RecordSource &source) {
     build_nodes();
     build_routing();
     allocate_slots();
-    validate_dims_and_flags();
+    validate_dims();
     std::printf("[Architecture] %zu nodes across %zu layers\n",
                 nodes_.size(), layers_.size());
     std::fflush(stdout);
@@ -349,13 +261,11 @@ void PyramidRuntime::build(RecordSource &source) {
 }
 
 /* =========================== run phase =================================== */
-void PyramidRuntime::merge_or_copy(MergeMode mode, const MergeParams &params,
-                                   const MergeCall &call, SDR &out) {
+void PyramidRuntime::concat_or_copy(SDR &out) {
     if (mergeInputs_.size() == 1)
-        out.setSDR(*mergeInputs_[0]);   // Python returns the object itself
+        out.setSDR(*mergeInputs_[0]);   // a single input is copied as it is
     else
-        merger_.merge(mergeInputs_, mode, spec_.merge.concat_axis, params,
-                      call, out);
+        concat_.concat(mergeInputs_, out);
 }
 
 void PyramidRuntime::encode_record(const Record &rec) {
@@ -371,14 +281,7 @@ void PyramidRuntime::encode_record(const Record &rec) {
         SDR &slot = inputSlots_.at(spec_.layers[0][p]);
         mergeInputs_.clear();
         for (std::size_t ei : planEnc_[p]) mergeInputs_.push_back(&encSlots_[ei]);
-
-        if (!spec_.merge.has_feature_mode)
-            slot.setSDR(*mergeInputs_[0]);   // mode None: the SDR itself
-        else
-            merge_or_copy(spec_.merge.feature_mode,
-                          spec_.merge.feature_params,
-                          MergeCall{nodeKey_[0][p], currentIter_,
-                                    MergeSlot::FeatureMerge}, slot);
+        concat_or_copy(slot);
     }
 }
 
@@ -386,188 +289,24 @@ void PyramidRuntime::run_one_layer(std::size_t li) {
     pool_->run_layer(li, [](HtmNode &n) { n.step(); });
 
     auto &view = outView_[li];
-    for (std::size_t p = 0; p < layers_[li].size(); ++p) {
-        HtmNode *n = layers_[li][p];
-        view[p] = {&n->output(),
-                   spec_.flags.use_predictive ? &n->predictiveOutput()
-                                              : nullptr};
-    }
-}
-
-void PyramidRuntime::lateral_exchange(std::size_t li) {
-    /* Neighbor order == the layer's node order (Python dict order). */
-    auto &view = outView_[li];
-    const std::size_t n = view.size();
-    if (n <= 1) return;   // single node keeps its own output
-
-    for (std::size_t i = 0; i < n; ++i) {
-        mergeInputs_.clear();
-        mergeInputs_.push_back(view[i].first);
-        if (i > 0) mergeInputs_.push_back(view[i - 1].first);
-        if (i + 1 < n) mergeInputs_.push_back(view[i + 1].first);
-        SDR &slot = lateralSlots_[lateralOffset_[li] + i];
-        merger_.merge(mergeInputs_, spec_.merge.htm_mode,
-                      spec_.merge.concat_axis, spec_.merge.htm_params,
-                      MergeCall{nodeKey_[li][i], currentIter_,
-                                MergeSlot::LateralExchange}, slot);
-    }
-    /* Publish AFTER all merges: Python merges from the pre-exchange dict. */
-    for (std::size_t i = 0; i < n; ++i)
-        view[i].first = &lateralSlots_[lateralOffset_[li] + i];
+    for (std::size_t p = 0; p < layers_[li].size(); ++p)
+        view[p] = &layers_[li][p]->output();
 }
 
 void PyramidRuntime::merge_children_for(std::size_t li, std::size_t parent_pos,
-                                        bool with_residual, SDR &out) {
-    const auto &children = childPos_[li][parent_pos];
+                                        SDR &out) {
     const auto &below = outView_[li - 1];
-    const std::string &parent = spec_.layers[li][parent_pos];
-
-    /* squeeze-skip variant replaces the standard merge entirely. */
-    if (spec_.flags.squeeze_skip) {
-        mergeInputs_.clear();
-        for (std::size_t cp : children) mergeInputs_.push_back(below[cp].first);
-        if (children.size() > 1) {
-            SDR &skip = skipSlots_.at(parent);
-            merger_.merge(mergeInputs_, spec_.merge.htm_mode,
-                          spec_.merge.concat_axis, spec_.merge.htm_params,
-                          MergeCall{nodeKey_[li][parent_pos], currentIter_,
-                                    MergeSlot::SqueezeSkip},
-                          skip);
-            mergeInputs_.push_back(&skip);
-        }
-        merge_or_copy(spec_.merge.htm_mode, spec_.merge.htm_params,
-                      MergeCall{nodeKey_[li][parent_pos], currentIter_,
-                                MergeSlot::Children}, out);
-        return;
-    }
-
-    /* Build the to_merge list as PAIRS, so anomaly_boost duplication and
-     * residual skip inputs flow through use_predictive's zip exactly like
-     * Python's `zip(*to_merge)`. */
-    pairScratch_.clear();
-    for (std::size_t cp : children) {
-        const OutPair &pr = below[cp];
-        std::int64_t n_copies = 1;
-        if (spec_.flags.anomaly_boost) {
-            /* 1 copy at a=0, up to 4 at a=1: n = 1 + round(a*3); Python
-             * round() is banker's (ties-to-even), matched by nearbyint
-             * under the default rounding mode. */
-            const double a = layers_[li - 1][cp]->last_anomaly();
-            n_copies = 1 + static_cast<std::int64_t>(std::nearbyint(a * 3.0));
-        }
-        for (std::int64_t k = 0; k < n_copies; ++k) pairScratch_.push_back(pr);
-    }
-    if (with_residual) {
-        const auto &residual = outView_[li - 2];
-        for (std::size_t gp : resPos_[li][parent_pos])
-            pairScratch_.push_back(residual[gp]);
-    }
-
-    if (spec_.flags.use_predictive) {
-        SDR &ma = mergedActiveSlots_.at(parent);
-        SDR &mp = mergedPredSlots_.at(parent);
-
-        mergeInputs_.clear();
-        for (const auto &pr : pairScratch_) mergeInputs_.push_back(pr.first);
-        merge_or_copy(spec_.merge.htm_mode, spec_.merge.htm_params,
-                      MergeCall{nodeKey_[li][parent_pos], currentIter_,
-                                MergeSlot::Children}, ma);
-
-        mergeInputs_.clear();
-        for (const auto &pr : pairScratch_) mergeInputs_.push_back(pr.second);
-        merge_or_copy(spec_.merge.htm_mode, spec_.merge.htm_params,
-                      MergeCall{nodeKey_[li][parent_pos], currentIter_,
-                                MergeSlot::ChildrenPred}, mp);
-
-        mergeInputs_.clear();
-        mergeInputs_.push_back(&ma);
-        mergeInputs_.push_back(&mp);
-        merger_.merge(mergeInputs_, MergeMode::Stack, 0,
-                      spec_.merge.htm_params,
-                      MergeCall{nodeKey_[li][parent_pos], currentIter_,
-                                MergeSlot::Children}, out);
-        return;
-    }
-
     mergeInputs_.clear();
-    for (const auto &pr : pairScratch_) mergeInputs_.push_back(pr.first);
-    merge_or_copy(spec_.merge.htm_mode, spec_.merge.htm_params,
-                  MergeCall{nodeKey_[li][parent_pos], currentIter_,
-                            MergeSlot::Children}, out);
-}
-
-const SDR *PyramidRuntime::apply_head_extras(const SDR *current) {
-    if (spec_.flags.recurrent_head && prevHeadValid_) {
-        mergeInputs_.clear();
-        mergeInputs_.push_back(current);
-        mergeInputs_.push_back(&prevHeadSdr_);
-        merger_.merge(mergeInputs_, spec_.merge.htm_mode,
-                      spec_.merge.concat_axis, spec_.merge.htm_params,
-                      MergeCall{nodeKey_[nLayers_ - 1][0], currentIter_,
-                                MergeSlot::RecurrentHead},
-                      headBufA_);
-        current = &headBufA_;
-    }
-
-    if (spec_.flags.long_term_memory) {
-        if (!memoryInitialized_) {
-            memorySdr_.setSDR(*current);   // first step: memory := current
-            memoryInitialized_ = true;
-        } else {
-            /* memory := merge(memory x inertia, current) */
-            mergeInputs_.clear();
-            for (std::int64_t k = 0; k < spec_.flags.memory_inertia; ++k)
-                mergeInputs_.push_back(&memorySdr_);
-            mergeInputs_.push_back(current);
-            merger_.merge(mergeInputs_, spec_.merge.htm_mode,
-                          spec_.merge.concat_axis, spec_.merge.htm_params,
-                          MergeCall{nodeKey_[nLayers_ - 1][0], currentIter_,
-                                    MergeSlot::MemoryUpdate},
-                          memoryBuf_);
-            memorySdr_.setSDR(memoryBuf_);
-        }
-        mergeInputs_.clear();
-        mergeInputs_.push_back(current);
-        mergeInputs_.push_back(&memorySdr_);
-        merger_.merge(mergeInputs_, spec_.merge.htm_mode,
-                      spec_.merge.concat_axis, spec_.merge.htm_params,
-                      MergeCall{nodeKey_[nLayers_ - 1][0], currentIter_,
-                                MergeSlot::MemoryApply},
-                      headBufB_);
-        current = &headBufB_;
-    }
-    return current;
+    for (std::size_t cp : childPos_[li][parent_pos])
+        mergeInputs_.push_back(below[cp]);
+    concat_or_copy(out);
 }
 
 void PyramidRuntime::merge_into_next(std::size_t li) {
     const std::size_t next = li + 1;
-    const bool is_head_next = (li + 2 == nLayers_);
-
-    if (spec_.flags.broadcast_head && is_head_next &&
-        !spec_.flags.squeeze_skip) {
-        /* head receives ALL previous layer outputs merged (layer order,
-         * node order within each layer -- Python's dict .values()). */
-        mergeInputs_.clear();
-        for (std::size_t l = 0; l <= li; ++l)
-            for (const auto &pr : outView_[l])
-                mergeInputs_.push_back(pr.first);
-        SDR &slot = inputSlots_.at(spec_.layers[next][0]);
-        merge_or_copy(spec_.merge.htm_mode, spec_.merge.htm_params,
-                      MergeCall{nodeKey_[next][0], currentIter_,
-                                MergeSlot::BroadcastHead}, slot);
-    } else {
-        const bool with_residual = spec_.flags.residual &&
-                                   !spec_.flags.squeeze_skip && li >= 1;
-        for (std::size_t p = 0; p < layers_[next].size(); ++p) {
-            SDR &slot = inputSlots_.at(spec_.layers[next][p]);
-            merge_children_for(next, p, with_residual, slot);
-        }
-    }
-
-    if (is_head_next && !spec_.flags.squeeze_skip) {
-        HtmNode *head = layers_[next][0];
-        const SDR *cur = &inputSlots_.at(spec_.layers[next][0]);
-        head->set_input(apply_head_extras(cur));
+    for (std::size_t p = 0; p < layers_[next].size(); ++p) {
+        SDR &slot = inputSlots_.at(spec_.layers[next][p]);
+        merge_children_for(next, p, slot);
     }
 }
 
@@ -627,19 +366,7 @@ void PyramidRuntime::run(
 
         for (std::size_t li = 0; li < nLayers_; ++li) {
             run_one_layer(li);
-
-            if (spec_.flags.lateral_exchange && li + 1 < nLayers_ &&
-                !spec_.flags.squeeze_skip)
-                lateral_exchange(li);
-
-            if (li + 1 < nLayers_) {
-                merge_into_next(li);
-            } else if (spec_.flags.recurrent_head &&
-                       !spec_.flags.squeeze_skip) {
-                /* head just ran: capture output[0] for the next record. */
-                prevHeadSdr_.setSDR(*outView_[li][headPos_].first);
-                prevHeadValid_ = true;
-            }
+            if (li + 1 < nLayers_) merge_into_next(li);
         }
 
         ++currentIter_;

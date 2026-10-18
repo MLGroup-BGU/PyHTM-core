@@ -23,17 +23,13 @@ CsvSource::CsvSource(std::string path, std::vector<std::string> columns,
                      std::vector<int> column_is_dt,
                      std::vector<std::string> dt_formats,
                      std::optional<std::int64_t> start,
-                     std::optional<std::int64_t> stop,
-                     std::optional<std::int64_t> step)
+                     std::optional<std::int64_t> stop)
     : path_(std::move(path)), columns_(std::move(columns)),
       isDt_(std::move(column_is_dt)), dtFmt_(std::move(dt_formats)) {
     start_ = start.value_or(0);
     stop_ = stop.value_or(-1);            // -1 == unbounded
-    step_ = step.value_or(1);
-    NTA_CHECK(start_ >= 0 && step_ >= 1)
-        << "CSV source supports non-negative start and positive step "
-        << "(matching how the runners slice); got start=" << start_
-        << " step=" << step_;
+    NTA_CHECK(start_ >= 0)
+        << "CSV source supports a non-negative start; got start=" << start_;
     open_and_parse_header();
 }
 
@@ -125,7 +121,6 @@ bool CsvSource::next(Record &rec) {
         if (!read_row()) return false;
         const std::int64_t idx = rowIdx_++;
         if (idx < start_) continue;
-        if ((idx - start_) % step_ != 0) continue;
 
         NTA_CHECK(fields_.size() == nCsvCols_)
             << "CsvSource: row " << idx << " has " << fields_.size()
@@ -163,11 +158,10 @@ std::int64_t CsvSource::total_rows() const {
         if (!line.empty() || !f.eof()) { ++dataLines; sawAny = true; }
     }
     (void)sawAny;
-    // apply the resolved iloc(start, stop, step) slice
+    // apply the resolved iloc[start:stop] window
     std::int64_t start = start_ < 0 ? 0 : start_;
     std::int64_t stop = (stop_ < 0 || stop_ > dataLines) ? dataLines : stop_;
-    std::int64_t step = step_ <= 0 ? 1 : step_;
-    std::int64_t n = start >= stop ? 0 : (stop - start + step - 1) / step;
+    std::int64_t n = start >= stop ? 0 : stop - start;
     cachedTotal_ = n;
     return n;
 }

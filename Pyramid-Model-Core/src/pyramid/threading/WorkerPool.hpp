@@ -9,8 +9,7 @@
  *     capped by the caller (max_workers) and by L0 width;
  *   * nodes distributed by balanced_partition_weighted: LPT over
  *     input-dimension weights, walking layers shallow -> deep and CARRYING
- *     cumulative bucket loads across layers (a verbatim port -- identical
- *     partitions to the Python function, verified by the balancer test);
+ *     cumulative bucket loads across layers;
  *   * run_layer(layer) blocks until every node in the layer finished (the
  *     layer barrier);
  *   * a worker exception aborts the run cleanly: the first error is
@@ -45,8 +44,8 @@ namespace pyramid {
 
 class HtmNode;
 
-/* Verbatim port of general.balanced_partition_weighted (LPT with cumulative
- * loads).  Returns per-bucket item indices; `cumulative` is updated. */
+/* LPT partition with cumulative loads.  Returns per-bucket item indices;
+ * `cumulative` is updated. */
 std::vector<std::vector<std::size_t>> balanced_partition_weighted(
     std::size_t n_items, const std::vector<double> &weights,
     std::size_t n_buckets, std::vector<double> &cumulative);

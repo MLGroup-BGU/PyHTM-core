@@ -47,7 +47,7 @@ PyHTM-core/
 │   ├── py/                  # the importable `htm` Python package
 │   └── external/            # cereal fetch script + bundled MurmurHash3
 ├── 📂 Pyramid-Model-Core/    # 🔺 the FULL pyramid runtime in C++
-│   ├── src/pyramid/         # rng / math / merge / encoders / spec / data /
+│   ├── src/pyramid/         # math / merge / encoders / spec / data /
 │   │                        #   runtime / threading (see its README)
 │   ├── bindings/            # htm.bindings.pyramid_engine (PyramidEngine)
 │   └── py/pyramid_support/  # htm.pyramid (DatasetReader batched feeder)
@@ -77,17 +77,16 @@ Two engines, one wheel:
 * **Single-HTM-Core** exposes the HTM building blocks as
   `htm.bindings.sdr / .encoders / .algorithms`.
 * **Pyramid-Model-Core** links the Single-HTM-Core static library and
-  implements only what a pyramid adds on top: numpy-equivalent RNG/math,
-  the 14 SDR merge modes, sample-derived encoder builders, the per-record
-  run loop with its extensions, data ingestion, and the pinned worker
-  pool. It is exposed as `htm.bindings.pyramid_engine` + the `htm.pyramid`
+  implements only what a pyramid adds on top: numpy-equivalent math,
+  the concatenation of each node's inputs, the deduced RDSE resolution, the
+  per-record run loop, data ingestion, and the pinned worker pool. It is exposed as `htm.bindings.pyramid_engine` + the `htm.pyramid`
   support package.
 
 Execution contract (the "instruction book"):
 
 1. The caller assembles a fully-resolved **spec dict** — architecture
    (nodes, layers, feature plan), per-node SP/TM parameters, encoder
-   definitions, merge modes and parameters, run-loop flags, and a data
+   definitions, the `record_signals` switch, and a data
    descriptor (native CSV path or a batched reader). PyHTM builds this
    dict via `htm_source.pipeline.build_pyramid_spec`.
 2. `PyramidEngine(spec)` parses it. `execute()` constructs encoders (with
@@ -119,8 +118,8 @@ Field-level spec documentation and the runtime model:
   other interpreters are not targeted.
 * The pyramid engine consumes a **fully-resolved spec** — YAML parsing and
   parameter resolution live with the caller (PyHTM keeps them in Python).
-* Stochastic merge modes are reproducible only when a `seed` is supplied
-  in the merge parameters. Without one, each call draws OS entropy.
+* A run is reproducible for any seed other than 0: htm.core treats a seed of
+  0 as "a new random seed".
 * On AVX-512 hosts, scalar `std::exp/log/pow` calls may differ from
   numpy by ≤ 1 ULP (see the
   [behavioral notes](Pyramid-Model-Core/README.md#-behavioral-notes)).

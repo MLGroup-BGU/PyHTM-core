@@ -12,7 +12,7 @@ CSV (via pandas) -- with identical semantics:
 
   * ``columns`` selects and ORDERS the served columns (the engine's column
     order); every other column is never materialized.
-  * ``start/stop/step`` apply pandas ``iloc``-style row slicing over the
+  * ``start/stop`` apply a pandas ``iloc[start:stop]`` row window over the
     whole dataset (used by runners that carve train/test windows).
   * datetime columns are parsed IN PYTHON (``pandas.to_datetime`` -- i.e.
     the exact parser the Python pyramid used) and served as int32
@@ -72,7 +72,6 @@ class DatasetReader:
                  dt_formats: Optional[Dict[str, str]] = None,
                  start: Optional[int] = None,
                  stop: Optional[int] = None,
-                 step: Optional[int] = None,
                  batch_rows: int = 8192):
         self._columns: List[str] = list(columns)
         self._is_dt = list(column_is_dt)
@@ -80,9 +79,7 @@ class DatasetReader:
         self._dt_formats = dict(dt_formats or {})
         self._start = 0 if start is None else int(start)
         self._stop = stop if stop is None else int(stop)
-        self._step = 1 if step is None else int(step)
-        assert self._start >= 0 and self._step >= 1, \
-            "DatasetReader supports non-negative start and positive step"
+        assert self._start >= 0, "DatasetReader supports a non-negative start"
         self._batch_rows = int(batch_rows)
 
         self.total_rows: Optional[int] = None
@@ -92,7 +89,7 @@ class DatasetReader:
 
         if isinstance(source, pd.DataFrame):
             self._mode = "df"
-            sliced = source.iloc[self._start:self._stop:self._step]
+            sliced = source.iloc[self._start:self._stop]
             self._df = sliced[self._columns].reset_index(drop=True)
             self.total_rows = len(self._df)
             self._limit = self.total_rows
@@ -118,18 +115,16 @@ class DatasetReader:
     def _sliced_len(self, n_total: int) -> int:
         stop = n_total if self._stop is None else min(self._stop, n_total)
         span = max(0, stop - self._start)
-        return (span + self._step - 1) // self._step
+        return span
 
     def _slice_frame(self, df: pd.DataFrame, base: int) -> pd.DataFrame:
-        """Apply the global (start, stop, step) to a chunk starting at
+        """Apply the global [start:stop] window to a chunk starting at
         global row index `base`."""
         n = len(df)
         idx = np.arange(base, base + n)
         keep = idx >= self._start
         if self._stop is not None:
             keep &= idx < self._stop
-        if self._step != 1:
-            keep &= ((idx - self._start) % self._step) == 0
         return df.iloc[np.nonzero(keep)[0]]
 
     def _pack(self, df: pd.DataFrame) -> dict:

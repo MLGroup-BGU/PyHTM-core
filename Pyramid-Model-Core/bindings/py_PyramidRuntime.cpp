@@ -15,7 +15,7 @@
  *   * PyReaderSource pulling one batch of rows (a few small buffer copies
  *     every `batch_rows` records), and
  *   * the optional progress callback (every `progress_every` records).
- * All stepping, merging and threading in between runs GIL-free, which is
+ * All stepping, concatenation and threading in between runs GIL-free, which is
  * what lets the worker pool actually use the machine.
  *
  * DATA INGESTION DESIGN: the Python DatasetReader helper (pandas/pyarrow)
@@ -57,33 +57,6 @@ std::optional<T> get_opt(const py::dict &d, const char *k) {
     return d[k].cast<T>();
 }
 
-MergeParams parse_merge_params(const py::object &obj) {
-    /* The Python side sends the FULLY-OVERLAID dict (DEFAULT_MERGE_PARAMS
-     * updated with any user params), so every key present here simply
-     * overrides the identical C++ default. */
-    MergeParams p;
-    if (obj.is_none()) return p;
-    const py::dict d = obj.cast<py::dict>();
-    p.target_sparsity = get_or<double>(d, "target_sparsity", p.target_sparsity);
-    if (d.contains("seed") && !d["seed"].is_none()) {
-        p.has_seed = true;
-        p.seed = d["seed"].cast<std::uint64_t>();
-    }
-    p.temperature = get_or<double>(d, "temperature", p.temperature);
-    p.alpha = get_or<double>(d, "alpha", p.alpha);
-    p.smoothing = get_or<double>(d, "smoothing", p.smoothing);
-    p.inhibition_radius =
-        get_or<std::int64_t>(d, "inhibition_radius", p.inhibition_radius);
-    p.inhibition_strength =
-        get_or<double>(d, "inhibition_strength", p.inhibition_strength);
-    p.burst_bonus = get_or<double>(d, "burst_bonus", p.burst_bonus);
-    p.novelty_weight = get_or<double>(d, "novelty_weight", p.novelty_weight);
-    p.segment_size = get_or<std::int64_t>(d, "segment_size", p.segment_size);
-    p.segment_threshold =
-        get_or<double>(d, "segment_threshold", p.segment_threshold);
-    return p;
-}
-
 DateAttr parse_date_attr(const py::object &v) {
     DateAttr a;
     if (py::isinstance<py::tuple>(v) || py::isinstance<py::list>(v)) {
@@ -98,10 +71,6 @@ DateAttr parse_date_attr(const py::object &v) {
 
 FeatureKind parse_kind(const std::string &k) {
     if (k == "rdse") return FeatureKind::Rdse;
-    if (k == "adaptive_rdse") return FeatureKind::AdaptiveRdse;
-    if (k == "hybrid_rdse") return FeatureKind::HybridRdse;
-    if (k == "dual_scalar") return FeatureKind::DualScalar;
-    if (k == "linear") return FeatureKind::Linear;
     if (k == "categorical") return FeatureKind::Categorical;
     if (k == "date") return FeatureKind::Date;
     throw std::invalid_argument("unknown encoder kind: " + k);
@@ -114,12 +83,6 @@ FeatureSpec parse_feature(const py::dict &d) {
     s.size = get_or<std::int64_t>(d, "size", 0);
     s.activeBits = get_or<std::int64_t>(d, "activeBits", 0);
     s.seed = get_or<std::uint64_t>(d, "seed", 0);
-    if (d.contains("lin_min") && !d["lin_min"].is_none())
-        s.lin_min = d["lin_min"].cast<double>();
-    if (d.contains("lin_max") && !d["lin_max"].is_none())
-        s.lin_max = d["lin_max"].cast<double>();
-    s.lin_p_low = get_or<double>(d, "lin_p_low", s.lin_p_low);
-    s.lin_p_high = get_or<double>(d, "lin_p_high", s.lin_p_high);
     if (d.contains("shape") && !d["shape"].is_none())
         s.shape = d["shape"].cast<std::vector<htm::UInt>>();
     if (d.contains("resolution") && !d["resolution"].is_none())
@@ -128,32 +91,6 @@ FeatureSpec parse_feature(const py::dict &d) {
         get_or<std::string>(d, "resolution_type", s.resolution_type);
     s.dedn = get_or<double>(d, "dedn", s.dedn);
     s.dedw = get_or<double>(d, "dedw", s.dedw);
-    s.adaptive_n_quantiles = get_or<std::int64_t>(d, "adaptive_n_quantiles",
-                                                  s.adaptive_n_quantiles);
-    s.adaptive_index_scale =
-        get_or<double>(d, "adaptive_index_scale", s.adaptive_index_scale);
-    s.adaptive_gamma = get_or<double>(d, "adaptive_gamma", s.adaptive_gamma);
-    s.adaptive_min_resolution = get_or<double>(d, "adaptive_min_resolution",
-                                               s.adaptive_min_resolution);
-    s.adaptive_clip_input =
-        get_or<bool>(d, "adaptive_clip_input", s.adaptive_clip_input);
-    s.adaptive_reserve =
-        get_or<bool>(d, "adaptive_reserve", s.adaptive_reserve);
-    s.hybrid_ratio = get_or<double>(d, "hybrid_ratio", s.hybrid_ratio);
-    if (d.contains("dual") && !d["dual"].is_none()) {
-        const py::dict dd = d["dual"].cast<py::dict>();
-        s.dual.fast_n_bits = get_opt<std::int64_t>(dd, "fast_n_bits");
-        s.dual.fast_w = get_opt<std::int64_t>(dd, "fast_w");
-        s.dual.slow_n_bits = get_opt<std::int64_t>(dd, "slow_n_bits");
-        s.dual.slow_w = get_opt<std::int64_t>(dd, "slow_w");
-        s.dual.n_quantiles = get_opt<std::int64_t>(dd, "n_quantiles");
-        s.dual.fast_warmup = get_opt<std::int64_t>(dd, "fast_warmup");
-        s.dual.fast_alpha = get_opt<double>(dd, "fast_alpha");
-        s.dual.fast_z_clip = get_opt<double>(dd, "fast_z_clip");
-        s.dual.clip_input = get_opt<bool>(dd, "clip_input");
-        s.dual.reserve_for_special_values =
-            get_opt<bool>(dd, "reserve_for_special_values");
-    }
     if (d.contains("date") && !d["date"].is_none()) {
         const py::dict dc = d["date"].cast<py::dict>();
         if (dc.contains("season")) s.date.season = parse_date_attr(dc["season"]);
@@ -176,17 +113,10 @@ SpSpec parse_sp(const py::dict &d) {
     SpSpec s;
     s.columnDimensions = d["columnDimensions"].cast<std::vector<htm::UInt>>();
     s.potentialPct = d["potentialPct"].cast<double>();
-    s.potentialRadius = d["potentialRadius"].cast<std::int64_t>();
-    s.globalInhibition = d["globalInhibition"].cast<bool>();
     s.synPermInactiveDec = d["synPermInactiveDec"].cast<double>();
-    s.stimulusThreshold = d["stimulusThreshold"].cast<double>();
     s.synPermActiveInc = d["synPermActiveInc"].cast<double>();
     s.synPermConnected = d["synPermConnected"].cast<double>();
-    s.boostStrength = d["boostStrength"].cast<double>();
     s.localAreaDensity = d["localAreaDensity"].cast<double>();
-    s.wrapAround = d["wrapAround"].cast<bool>();
-    s.dutyCyclePeriod = get_or<std::int64_t>(d, "dutyCyclePeriod", 1000);
-    s.minPctOverlapDutyCycle = get_or<double>(d, "minPctOverlapDutyCycle", 0.001);
     return s;
 }
 
@@ -195,7 +125,6 @@ TmSpec parse_tm(const py::dict &d) {
     t.cellsPerColumn = d["cellsPerColumn"].cast<std::int64_t>();
     t.activationThreshold = d["activationThreshold"].cast<std::int64_t>();
     t.initialPerm = d["initialPerm"].cast<double>();
-    t.permanenceConnected = d["permanenceConnected"].cast<double>();
     t.minThreshold = d["minThreshold"].cast<std::int64_t>();
     t.newSynapseCount = d["newSynapseCount"].cast<std::int64_t>();
     t.permanenceInc = d["permanenceInc"].cast<double>();
@@ -211,19 +140,9 @@ NodeSpec parse_node(const std::string &name, const py::dict &d) {
     NodeSpec n;
     n.name = name;
     n.seed = d["seed"].cast<std::uint64_t>();
-    n.has_sp = d["has_sp"].cast<bool>();
-    if (n.has_sp) n.sp = parse_sp(d["sp"].cast<py::dict>());
+    n.sp = parse_sp(d["sp"].cast<py::dict>());
     n.tm = parse_tm(d["tm"].cast<py::dict>());
     n.input_dims = d["input_dims"].cast<std::vector<htm::UInt>>();
-    n.max_pool = get_or<std::int64_t>(d, "max_pool", 1);
-    n.flatten = get_or<bool>(d, "flatten", true);
-    n.learn_schedule = get_opt<std::int64_t>(d, "learn_schedule");
-    n.anomaly_score = get_or<bool>(d, "anomaly_score", true);
-    n.input_predictive = get_or<bool>(d, "input_predictive", false);
-    n.return_predictive = get_or<bool>(d, "return_predictive", false);
-    n.anomaly_detector = get_or<bool>(d, "anomaly_detector", false);
-    n.residual_mode = static_cast<int>(get_or<std::int64_t>(d, "residual_mode", 1));
-    n.residual_strength = get_or<double>(d, "residual_strength", 1.0);
     n.summary = get_or<std::string>(d, "summary", "");
     return n;
 }
@@ -244,35 +163,7 @@ PyramidSpec parse_spec(const py::dict &d) {
                         parse_node(item.first.cast<std::string>(),
                                    item.second.cast<py::dict>()));
 
-    const py::dict m = d["merge"].cast<py::dict>();
-    s.merge.htm_mode = parse_merge_mode(m["htm_mode"].cast<std::string>());
-    s.merge.htm_params = parse_merge_params(
-        m.contains("htm_params") ? py::object(m["htm_params"])
-                                 : py::object(py::none()));
-    if (!m.contains("feature_mode") || m["feature_mode"].is_none()) {
-        s.merge.has_feature_mode = false;
-    } else {
-        s.merge.has_feature_mode = true;
-        s.merge.feature_mode =
-            parse_merge_mode(m["feature_mode"].cast<std::string>());
-    }
-    s.merge.feature_params = parse_merge_params(
-        m.contains("feature_params") ? py::object(m["feature_params"])
-                                     : py::object(py::none()));
-    s.merge.concat_axis =
-        static_cast<int>(get_or<std::int64_t>(m, "concat_axis", 0));
-
-    const py::dict f = d["run_flags"].cast<py::dict>();
-    s.flags.use_predictive = get_or<bool>(f, "use_predictive", false);
-    s.flags.residual = get_or<bool>(f, "residual", false);
-    s.flags.broadcast_head = get_or<bool>(f, "broadcast_head", false);
-    s.flags.recurrent_head = get_or<bool>(f, "recurrent_head", false);
-    s.flags.anomaly_boost = get_or<bool>(f, "anomaly_boost", false);
-    s.flags.long_term_memory = get_or<bool>(f, "long_term_memory", false);
-    s.flags.memory_inertia = get_or<std::int64_t>(f, "memory_inertia", 5);
-    s.flags.lateral_exchange = get_or<bool>(f, "lateral_exchange", false);
-    s.flags.squeeze_skip = get_or<bool>(f, "squeeze_skip", false);
-    s.flags.record_signals = get_or<bool>(f, "record_signals", false);
+    s.record_signals = get_or<bool>(d, "record_signals", false);
 
     for (auto e : d["encoders"].cast<py::list>())
         s.encoders.push_back(parse_feature(e.cast<py::dict>()));
@@ -291,7 +182,6 @@ PyramidSpec parse_spec(const py::dict &d) {
         s.data.dt_formats.assign(s.data.columns.size(), "");
     s.data.row_start = get_opt<std::int64_t>(data, "row_start");
     s.data.row_stop = get_opt<std::int64_t>(data, "row_stop");
-    s.data.row_step = get_opt<std::int64_t>(data, "row_step");
     s.data.train_percent = get_or<double>(data, "train_percent", 1.0);
     s.data.batch_rows = get_or<std::int64_t>(data, "batch_rows", 8192);
 
@@ -555,8 +445,7 @@ private:
             << "(otherwise pass a DatasetReader factory)";
         source_ = std::make_unique<CsvSource>(
             spec_.data.path, spec_.data.columns, spec_.data.column_is_dt,
-            spec_.data.dt_formats, spec_.data.row_start, spec_.data.row_stop,
-            spec_.data.row_step);
+            spec_.data.dt_formats, spec_.data.row_start, spec_.data.row_stop);
     }
 };
 
@@ -565,8 +454,8 @@ private:
 PYBIND11_MODULE(pyramid_engine, m) {
     m.doc() =
         "PyHTM pyramid runtime in C++: the whole per-record loop (encode -> "
-        "merge -> SP/TM across all layers -> merge chain extras) executes "
-        "under one GIL release, on a pinned worker pool.";
+        "concatenate -> SP/TM across all layers) executes under one GIL "
+        "release, on a pinned worker pool.";
 
     /* Dims probe for the Python spec builder: single source of truth for
      * encoder output dimensions (the date encoder's size arithmetic lives

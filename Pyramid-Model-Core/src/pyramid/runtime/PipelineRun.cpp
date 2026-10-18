@@ -89,14 +89,11 @@ void PyramidRuntime::pipe_wake() {
     pipeCv_.notify_all();
 }
 
-void PyramidRuntime::ws_merge_or_copy(WorkerScratch &ws, MergeMode mode,
-                                      const MergeParams &params,
-                                      const MergeCall &call, SDR &out) {
+void PyramidRuntime::ws_concat_or_copy(WorkerScratch &ws, SDR &out) {
     if (ws.inputs.size() == 1)
-        out.setSDR(*ws.inputs[0]);      // Python returns the object itself
+        out.setSDR(*ws.inputs[0]);      // a single input is copied as it is
     else
-        ws.merger.merge(ws.inputs, mode, spec_.merge.concat_axis, params,
-                        call, out);
+        ws.concat.concat(ws.inputs, out);
 }
 
 void PyramidRuntime::allocate_pipeline() {
@@ -129,14 +126,11 @@ void PyramidRuntime::allocate_pipeline() {
         if (end != e && v >= 2 && v <= K_MAX)
             pipeK_ = static_cast<std::int64_t>(v);
     }
-    pipelineOn_ = pipeK_ > 1 && !spec_.flags.lateral_exchange &&
-                  pool_ && pool_->n_workers() > 1;
+    pipelineOn_ = pipeK_ > 1 && pool_ && pool_->n_workers() > 1;
     if (!pipelineOn_) return;
     const std::size_t K = static_cast<std::size_t>(pipeK_);
 
     outRing_.resize(nLayers_);
-    if (spec_.flags.use_predictive) predRing_.resize(nLayers_);
-    if (spec_.flags.anomaly_boost) anomRing_.resize(nLayers_);
     nodeDone_.resize(nLayers_);
     producersOf_.assign(nLayers_, {});
     consumersOf_.assign(nLayers_, {});
@@ -145,9 +139,6 @@ void PyramidRuntime::allocate_pipeline() {
     for (std::size_t li = 0; li < nLayers_; ++li) {
         const std::size_t n = layers_[li].size();
         outRing_[li].resize(n);
-        if (spec_.flags.use_predictive) predRing_[li].resize(n);
-        if (spec_.flags.anomaly_boost)
-            anomRing_[li].assign(n, std::vector<double>(K, 0.0));
         nodeDone_[li].resize(n);
         producersOf_[li].assign(n, {});
         consumersOf_[li].assign(n, {});
@@ -156,13 +147,6 @@ void PyramidRuntime::allocate_pipeline() {
             outRing_[li][p].resize(K);
             for (auto &s : outRing_[li][p]) s.initialize(dims);
             ringBytes += K * layers_[li][p]->output().size;
-            if (spec_.flags.use_predictive) {
-                const auto pd =
-                    layers_[li][p]->predictiveOutput().dimensions;
-                predRing_[li][p].resize(K);
-                for (auto &s : predRing_[li][p]) s.initialize(pd);
-                ringBytes += K * layers_[li][p]->predictiveOutput().size;
-            }
             nodeDone_[li][p] =
                 std::make_unique<std::atomic<std::int64_t>>(-1);
         }
@@ -177,27 +161,14 @@ void PyramidRuntime::allocate_pipeline() {
         ringBytes += K * inputSlots_.at(spec_.layers[0][p]).size;
     }
 
-    /* Producer lists (who must finish t before I can run t) and the
-     * derived consumer lists (who reads my slot t, gating overwrite at
-     * t+K).  Mirrors merge_into_next's routing exactly. */
-    const bool residual_on =
-        spec_.flags.residual && !spec_.flags.squeeze_skip;
+    /* Producer lists (who must finish t before I can run t: the children)
+     * and the derived consumer lists (who reads my slot t, gating overwrite
+     * at t+K).  Mirrors merge_into_next's routing exactly. */
     for (std::size_t li = 1; li < nLayers_; ++li) {
-        const bool is_head = (li + 1 == nLayers_);
         for (std::size_t p = 0; p < layers_[li].size(); ++p) {
             auto &prod = producersOf_[li][p];
-            if (spec_.flags.broadcast_head && is_head &&
-                !spec_.flags.squeeze_skip) {
-                for (std::size_t l = 0; l < li; ++l)
-                    for (std::size_t q = 0; q < layers_[l].size(); ++q)
-                        prod.push_back({l, q});
-            } else {
-                for (std::size_t cp : childPos_[li][p])
-                    prod.push_back({li - 1, cp});
-                if (residual_on && li >= 2)
-                    for (std::size_t gp : resPos_[li][p])
-                        prod.push_back({li - 2, gp});
-            }
+            for (std::size_t cp : childPos_[li][p])
+                prod.push_back({li - 1, cp});
             for (const Pos &q : prod)
                 consumersOf_[q.layer][q.pos].push_back({li, p});
         }
@@ -244,13 +215,7 @@ void PyramidRuntime::encode_into_l0ring(const Record &rec, std::int64_t t,
         ws.inputs.clear();
         for (std::size_t ei : planEnc_[p])
             ws.inputs.push_back(&encSlots_[ei]);
-        if (!spec_.merge.has_feature_mode)
-            out.setSDR(*ws.inputs[0]);
-        else
-            ws_merge_or_copy(ws, spec_.merge.feature_mode,
-                             spec_.merge.feature_params,
-                             MergeCall{nodeKey_[0][p], t,
-                                       MergeSlot::FeatureMerge}, out);
+        ws_concat_or_copy(ws, out);
     }
 }
 
@@ -286,158 +251,30 @@ bool PyramidRuntime::pipe_produce(RecordSource &source, std::int64_t limit,
 }
 
 void PyramidRuntime::merge_children_ring(std::size_t li, std::size_t p,
-                                         std::int64_t t, bool with_residual,
-                                         WorkerScratch &ws, SDR &out) {
+                                         std::int64_t t, WorkerScratch &ws,
+                                         SDR &out) {
     const std::size_t k = static_cast<std::size_t>(t % pipeK_);
-    const auto &children = childPos_[li][p];
-    const std::string &parent = spec_.layers[li][p];
-    const bool is_head = (li + 1 == nLayers_);
-
-    if (spec_.flags.broadcast_head && is_head &&
-        !spec_.flags.squeeze_skip) {
-        ws.inputs.clear();
-        for (std::size_t l = 0; l < li; ++l)
-            for (std::size_t q = 0; q < layers_[l].size(); ++q)
-                ws.inputs.push_back(&outRing_[l][q][k]);
-        ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params,
-                         MergeCall{nodeKey_[li][p], t, MergeSlot::Children}, out);
-        return;
-    }
-
-    if (spec_.flags.squeeze_skip) {
-        ws.inputs.clear();
-        for (std::size_t cp : children)
-            ws.inputs.push_back(&outRing_[li - 1][cp][k]);
-        if (children.size() > 1) {
-            SDR &skip = skipSlots_.at(parent);       // owner-exclusive
-            ws.merger.merge(ws.inputs, spec_.merge.htm_mode,
-                            spec_.merge.concat_axis,
-                            spec_.merge.htm_params,
-                            MergeCall{nodeKey_[li][p], t,
-                                      MergeSlot::SqueezeSkip}, skip);
-            ws.inputs.push_back(&skip);
-        }
-        ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params,
-                         MergeCall{nodeKey_[li][p], t, MergeSlot::BroadcastHead}, out);
-        return;
-    }
-
-    ws.pairs.clear();
-    for (std::size_t cp : children) {
-        OutPair pr{&outRing_[li - 1][cp][k],
-                   spec_.flags.use_predictive ? &predRing_[li - 1][cp][k]
-                                              : nullptr};
-        std::int64_t n_copies = 1;
-        if (spec_.flags.anomaly_boost) {
-            const double a = anomRing_[li - 1][cp][k];
-            n_copies =
-                1 + static_cast<std::int64_t>(std::nearbyint(a * 3.0));
-        }
-        for (std::int64_t c = 0; c < n_copies; ++c) ws.pairs.push_back(pr);
-    }
-    if (with_residual)
-        for (std::size_t gp : resPos_[li][p])
-            ws.pairs.push_back(
-                {&outRing_[li - 2][gp][k],
-                 spec_.flags.use_predictive ? &predRing_[li - 2][gp][k]
-                                            : nullptr});
-
-    if (spec_.flags.use_predictive) {
-        SDR &ma = mergedActiveSlots_.at(parent);     // owner-exclusive
-        SDR &mp = mergedPredSlots_.at(parent);
-        ws.inputs.clear();
-        for (const auto &pr : ws.pairs) ws.inputs.push_back(pr.first);
-        ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params,
-                         MergeCall{nodeKey_[li][p], t, MergeSlot::Children}, ma);
-        ws.inputs.clear();
-        for (const auto &pr : ws.pairs) ws.inputs.push_back(pr.second);
-        ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params,
-                         MergeCall{nodeKey_[li][p], t, MergeSlot::ChildrenPred}, mp);
-        ws.inputs.clear();
-        ws.inputs.push_back(&ma);
-        ws.inputs.push_back(&mp);
-        ws.merger.merge(ws.inputs, MergeMode::Stack, 0,
-                        spec_.merge.htm_params,
-                        MergeCall{nodeKey_[li][p], t, MergeSlot::Children}, out);
-        return;
-    }
-
     ws.inputs.clear();
-    for (const auto &pr : ws.pairs) ws.inputs.push_back(pr.first);
-    ws_merge_or_copy(ws, spec_.merge.htm_mode, spec_.merge.htm_params,
-                     MergeCall{nodeKey_[li][p], t, MergeSlot::Children}, out);
-}
-
-const SDR *PyramidRuntime::apply_head_extras_ws(const SDR *current,
-                                                std::int64_t t,
-                                                WorkerScratch &ws) {
-    /* Head-owner exclusive; state members (prevHeadSdr_, memorySdr_,
-     * headBufA_/B_) are touched only here, strictly in record order. */
-    if (spec_.flags.recurrent_head && prevHeadValid_) {
-        ws.inputs.clear();
-        ws.inputs.push_back(current);
-        ws.inputs.push_back(&prevHeadSdr_);
-        ws.merger.merge(ws.inputs, spec_.merge.htm_mode,
-                        spec_.merge.concat_axis, spec_.merge.htm_params,
-                        MergeCall{nodeKey_[nLayers_ - 1][0], t, MergeSlot::RecurrentHead},
-                        headBufA_);
-        current = &headBufA_;
-    }
-    if (spec_.flags.long_term_memory) {
-        if (!memoryInitialized_) {
-            memorySdr_.setSDR(*current);
-            memoryInitialized_ = true;
-        } else {
-            ws.inputs.clear();
-            for (std::int64_t c = 0; c < spec_.flags.memory_inertia; ++c)
-                ws.inputs.push_back(&memorySdr_);
-            ws.inputs.push_back(current);
-            ws.merger.merge(ws.inputs, spec_.merge.htm_mode,
-                            spec_.merge.concat_axis, spec_.merge.htm_params,
-                            MergeCall{nodeKey_[nLayers_ - 1][0], t, MergeSlot::MemoryUpdate},
-                            memoryBuf_);
-            memorySdr_.setSDR(memoryBuf_);
-        }
-        ws.inputs.clear();
-        ws.inputs.push_back(current);
-        ws.inputs.push_back(&memorySdr_);
-        ws.merger.merge(ws.inputs, spec_.merge.htm_mode,
-                        spec_.merge.concat_axis, spec_.merge.htm_params,
-                        MergeCall{nodeKey_[nLayers_ - 1][0], t, MergeSlot::MemoryApply},
-                        headBufB_);
-        current = &headBufB_;
-    }
-    return current;
+    for (std::size_t cp : childPos_[li][p])
+        ws.inputs.push_back(&outRing_[li - 1][cp][k]);
+    ws_concat_or_copy(ws, out);
 }
 
 void PyramidRuntime::pipe_exec_node(std::size_t li, std::size_t p,
                                     std::int64_t t, WorkerScratch &ws) {
     HtmNode *n = layers_[li][p];
     const std::size_t k = static_cast<std::size_t>(t % pipeK_);
-    const bool is_head = (li + 1 == nLayers_);
-    const bool with_residual =
-        spec_.flags.residual && !spec_.flags.squeeze_skip && li >= 2;
 
     if (li == 0) {
         inputSlots_.at(spec_.layers[0][p]).setSDR(l0InRing_[p][k]);
     } else {
         SDR &slot = inputSlots_.at(spec_.layers[li][p]);
-        merge_children_ring(li, p, t, with_residual, ws, slot);
-        if (is_head && !spec_.flags.squeeze_skip)
-            n->set_input(apply_head_extras_ws(&slot, t, ws));
+        merge_children_ring(li, p, t, ws, slot);
     }
 
     n->step();
 
     outRing_[li][p][k].setSDR(n->output());
-    if (spec_.flags.use_predictive)
-        predRing_[li][p][k].setSDR(n->predictiveOutput());
-    if (spec_.flags.anomaly_boost)
-        anomRing_[li][p][k] = n->last_anomaly();
-    if (is_head && spec_.flags.recurrent_head && !spec_.flags.squeeze_skip) {
-        prevHeadSdr_.setSDR(n->output());
-        prevHeadValid_ = true;
-    }
 
     /* Publish completion with a release store; workers observe it via their
      * acquire-load busy-poll. NO condition-variable notify here: notifying on

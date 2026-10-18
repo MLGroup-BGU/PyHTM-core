@@ -3,8 +3,8 @@
  *
  * Record streaming for the pyramid runtime.
  *
- * A RecordSource yields the dataset's rows -- already sliced by the runner's
- * (start, stop, step) -- one at a time, as parallel arrays matching the
+ * A RecordSource yields the dataset's rows -- within an optional
+ * iloc[start:stop] window -- one at a time, as parallel arrays matching the
  * spec's column order: a double per numeric/categorical column and DateParts
  * per datetime column.  Sources are RESETTABLE because the build phase may
  * need a first pass over the training slice (sample-derived encoder
@@ -63,13 +63,12 @@ public:
 class CsvSource final : public RecordSource {
 public:
     /* `columns` / `column_is_dt` / `dt_formats` follow the spec order;
-     * slice = the runner's iloc(start, stop, step) over data rows. */
+     * window = iloc[start:stop] over data rows. */
     CsvSource(std::string path, std::vector<std::string> columns,
               std::vector<int> column_is_dt,
               std::vector<std::string> dt_formats,
               std::optional<std::int64_t> start,
-              std::optional<std::int64_t> stop,
-              std::optional<std::int64_t> step);
+              std::optional<std::int64_t> stop);
 
     bool next(Record &rec) override;
     void reset() override;
@@ -84,7 +83,7 @@ private:
     std::vector<std::string> columns_;
     std::vector<int> isDt_;
     std::vector<std::string> dtFmt_;
-    std::int64_t start_ = 0, stop_ = -1, step_ = 1;   // resolved slice
+    std::int64_t start_ = 0, stop_ = -1;   // resolved window
 
     std::ifstream file_;
     std::vector<std::int64_t> colIndex_;   // spec column -> csv column
